@@ -932,6 +932,18 @@ export const RU: Record<string, string> = {
     "Без проекта озвученные куски пропадут при закрытии программы. Создать проект? Тогда каждый кусок сохраняется сразу после озвучки.",
   "Without a project": "Без проекта",
   "Create a project": "Создать проект",
+  // Pronunciation dictionary
+  "Pronunciation dictionary": "Словарь произношения",
+  "Applied to every text before Drama 3 reads it. “+” before the stressed vowel: з+амок → за́мок, зам+ок → замо́к.":
+    "Применяется к каждому тексту перед озвучкой. «+» ставится перед ударной гласной: з+амок → за́мок, зам+ок → замо́к.",
+  "Written": "Написано",
+  "Read as": "Читать как",
+  "Whole word": "Целое слово",
+  "Check: type a phrase…": "Проверка: впишите фразу…",
+  "+ Word": "+ Слово",
+  "📖 Dictionary": "📖 Словарь",
+  "Dictionary": "Словарь",
+  "Stress marks, names and abbreviations, applied to every text": "Ударения, имена и сокращения — для всех текстов",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

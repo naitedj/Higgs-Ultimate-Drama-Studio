@@ -713,6 +713,7 @@
                 <span>s</span>
               </label>
               <div class="slider-label">
+                <button id="dictionary-open" class="compact-button dictionary-open" type="button" title="Stress marks, names and abbreviations, applied to every text">📖 Dictionary</button>
                 <button id="drama-options-stable" class="compact-button" type="button" title="Temperature 0.75 and Top-P 0.85: the voice keeps closer to its reference, speech is a little more even">Steady voice</button>
                 <button id="drama-options-reset" class="compact-button" type="button">Reset to defaults</button>
               </div>
@@ -911,6 +912,7 @@
             </div>
             <div class="action-row">
               <button id="chapter-split" class="compact-button" type="button">Cut into pieces</button>
+              <button class="compact-button dictionary-open" type="button" title="Stress marks, names and abbreviations, applied to every text">📖 Dictionary</button>
               <button id="chapter-run" class="primary-btn" type="button">▶ Voice the chapter</button>
               <button id="chapter-stop" class="cancel-btn hidden" type="button">⏹ Stop</button>
               <button id="chapter-redo-bad" class="compact-button hidden" type="button">↻ Redo the marked pieces</button>
@@ -1478,6 +1480,35 @@ Third phrase."></textarea>
           <div class="modal-actions">
             <button id="audio-editor-cancel" class="compact-button" type="button">Cancel</button>
             <button id="audio-editor-save" class="compact-button primary" type="button">Save</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ═══════════ Pronunciation dictionary ═══════════ -->
+      <div id="dictionary-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="dictionary-title">
+        <section class="modal-panel remarks-editor-panel dictionary-panel">
+          <div class="modal-head">
+            <div>
+              <h3 id="dictionary-title">Pronunciation dictionary</h3>
+              <span class="api-status-text">Applied to every text before Drama 3 reads it. “+” before the stressed vowel: з+амок → за́мок, зам+ок → замо́к.</span>
+            </div>
+            <button id="dictionary-close" class="popover-close" type="button" aria-label="Close">✕</button>
+          </div>
+          <div class="remarks-editor-head dictionary-head">
+            <span>Written</span>
+            <span>Read as</span>
+            <span>Whole word</span>
+            <span></span>
+          </div>
+          <div id="dictionary-list" class="remarks-editor-list"></div>
+          <div class="dictionary-test">
+            <input id="dictionary-test-input" class="text-input" type="text" spellcheck="false" placeholder="Check: type a phrase…" />
+            <span id="dictionary-test-output" class="dictionary-test-output"></span>
+          </div>
+          <div class="modal-actions">
+            <button id="dictionary-add" class="compact-button" type="button">+ Word</button>
+            <button id="dictionary-reset" class="compact-button" type="button">Reset to defaults</button>
+            <button id="dictionary-done" class="compact-button primary" type="button">Done</button>
           </div>
         </section>
       </div>

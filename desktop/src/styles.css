@@ -2434,3 +2434,8 @@ input[type="range"]::-moz-range-thumb {
 .studio-audio { margin-top: 8px; width: 100%; }
 .project-name { font-size: 14px; font-weight: 700; margin: 2px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-detail { overflow-wrap: anywhere; }
+.dictionary-head, .dictionary-row { grid-template-columns: 1fr 1fr 86px auto; }
+.dictionary-whole { justify-self: center; }
+.dictionary-test { align-items: center; display: flex; gap: 10px; padding: 0 16px 10px; }
+.dictionary-test .text-input { flex: 1; }
+.dictionary-test-output { color: var(--accent); flex: 1; font-size: 13px; }

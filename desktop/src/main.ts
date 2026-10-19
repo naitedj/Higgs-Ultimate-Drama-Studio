@@ -56,6 +56,8 @@ import {
 } from "./audioEdit";
 import type { PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
+import { applyDictionary, DICTIONARY_STORAGE_KEY, loadDictionary, saveDictionary } from "./dictionary";
+import type { DictionaryEntry } from "./dictionary";
 import {
   DRAMA_DEFAULT_OPTIONS,
   DRAMA_DEVICE_STORAGE_KEY,
@@ -5681,7 +5683,7 @@ async function generateDramaJob(job: GenerationJob): Promise<GenerationResult> {
   dramaPartLabel = "";
   if (job.payload.kind === "scene") return generateDramaScene(job, job.payload);
   if (job.payload.kind !== "tts") throw new Error(t("Drama 3 works in the TTS tab for now"));
-  const result = await invoke<DramaGenerationResult>("drama_generate", {
+  const result = await dramaGenerate({
     request: {
       text: job.payload.text,
       voice: job.dramaVoice || "none",
@@ -6270,7 +6272,7 @@ async function redoSceneLine(index: number): Promise<void> {
     const { text, voice } = sceneLineRequest(line.reply, sceneLinesCharacters);
     // A new take: same settings, a new random seed.
     const options = dramaRequestOptions({ ...readDramaOptionsFromUi(), seed: "" });
-    const result = await invoke<DramaGenerationResult>("drama_generate", {
+    const result = await dramaGenerate({
       request: { text, voice, options, streamPlayback: false },
     });
     sceneLines[index] = { reply: line.reply, result: await levelSceneTake(autoShortenPauses(result), dramaScene.level) };
@@ -6343,7 +6345,7 @@ async function generateDramaScene(
       dramaPartLabel = `${t("Line")} ${i + 1}/${replies.length} · `;
       setProgress("#gen-progress-bar", i, replies.length);
       const { text, voice } = sceneLineRequest(replies[i], characters);
-      const result = await invoke<DramaGenerationResult>("drama_generate", {
+      const result = await dramaGenerate({
         request: { text, voice, options: job.options, streamPlayback: false },
       });
       setDramaLastSeed(result.seed);
@@ -6366,7 +6368,7 @@ async function generateDramaScene(
   for (let i = 0; i < parts.length; i++) {
     dramaPartLabel = parts.length > 1 ? `${t("Part")} ${i + 1}/${parts.length} · ` : "";
     setProgress("#gen-progress-bar", i, parts.length);
-    const result = await invoke<DramaGenerationResult>("drama_generate", {
+    const result = await dramaGenerate({
       request: {
         text: sceneText(parts[i], characters),
         voice,
@@ -8357,7 +8359,8 @@ async function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationR
     status = "bad";
     problems.push(t("hit the length limit: the end is missing"));
   }
-  const cps = charsPerSecond(piece.text, take.seconds);
+  const spoken = applyDictionary(piece.text, dictionary);
+  const cps = charsPerSecond(spoken, take.seconds);
   const speakable = Math.round(cps * take.seconds);
   // A short reply ("Нет.") takes a second whatever its few letters: allow 2 s on top.
   if (take.seconds > 2 + speakable / 6) {
@@ -8368,7 +8371,7 @@ async function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationR
     problems.push(t("too short for its text: words skipped"));
   }
   // Recognition of one or two words is unreliable: it may only ask for a check.
-  const fewWords = comparableWords(piece.text).length <= 2;
+  const fewWords = comparableWords(spoken).length <= 2;
   let coverage: number | null = null;
   if (recognise) {
     try {
@@ -8376,7 +8379,7 @@ async function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationR
       await invoke("save_binary_file", { path, base64Data: take.wavBase64 });
       const heard = await tryAutoTranscribeSilently(path);
       if (heard) {
-        const check = wordCoverage(piece.text, heard);
+        const check = wordCoverage(spoken, heard);
         coverage = check.coverage;
         if (check.coverage < 0.8 && !fewWords) {
           status = "bad";
@@ -8410,7 +8413,7 @@ async function voiceChapterPiece(piece: ChapterPieceState): Promise<void> {
     // The seed field counts for the first take only; retries need other seeds.
     const ui = readDramaOptionsFromUi();
     const options = dramaRequestOptions(attempt === 0 ? ui : { ...ui, seed: "" });
-    const raw = await invoke<DramaGenerationResult>("drama_generate", {
+    const raw = await dramaGenerate({
       request: { text, voice, options, streamPlayback: false },
     });
     attempts += 1;
@@ -8830,7 +8833,7 @@ async function studioTrialTake(original: boolean): Promise<void> {
       }
     }
     setStudioStatus(t("Generating the trial take…"));
-    const result = await invoke<DramaGenerationResult>("drama_generate", {
+    const result = await dramaGenerate({
       request: {
         text: `${characterStyleHint({ style: s.style })}${s.phrase.trim()}`,
         voice,
@@ -8922,6 +8925,106 @@ function initVoiceStudio(): void {
   el("#studio-test").addEventListener("click", () => void studioTrialTake(false));
   el("#studio-test-original").addEventListener("click", () => void studioTrialTake(true));
   el("#studio-save").addEventListener("click", () => void studioSaveVoice());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pronunciation dictionary: applied to every text sent to Drama 3.
+// ═══════════════════════════════════════════════════════════════════════════
+
+let dictionary: DictionaryEntry[] = loadDictionary();
+
+/** drama_generate with the dictionary applied to the text. Every Drama 3 take goes through here. */
+function dramaGenerate(args: { request: { text: string } & Record<string, unknown> }): Promise<DramaGenerationResult> {
+  return invoke<DramaGenerationResult>("drama_generate", {
+    request: { ...args.request, text: applyDictionary(args.request.text, dictionary) },
+  });
+}
+
+function updateDictionaryButtons(): void {
+  const count = dictionary.filter((e) => e.from.trim()).length;
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".dictionary-open")) {
+    button.textContent = `📖 ${t("Dictionary")} (${count})`;
+  }
+}
+
+function changeDictionary(next: DictionaryEntry[]): void {
+  dictionary = next;
+  saveDictionary(dictionary);
+  updateDictionaryButtons();
+  renderDictionaryTest();
+}
+
+function renderDictionaryTest(): void {
+  const input = el<HTMLInputElement>("#dictionary-test-input").value;
+  el("#dictionary-test-output").textContent = input.trim() ? `→ ${applyDictionary(input, dictionary)}` : "";
+}
+
+function renderDictionaryEditor(): void {
+  const list = el<HTMLElement>("#dictionary-list");
+  list.innerHTML = "";
+  dictionary.forEach((entry, index) => {
+    const row = document.createElement("div");
+    row.className = "remarks-editor-row dictionary-row";
+    row.dataset.index = String(index);
+    row.innerHTML = `
+      <input class="text-input" data-field="from" type="text" spellcheck="false" placeholder="${escapeHtml(t("замок"))}" />
+      <input class="text-input" data-field="to" type="text" spellcheck="false" placeholder="${escapeHtml(t("з+амок"))}" />
+      <label class="toggle-switch dictionary-whole"><input type="checkbox" data-field="whole" /><span class="toggle-slider"></span></label>
+      <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
+    `;
+    row.querySelector<HTMLInputElement>('[data-field="from"]')!.value = entry.from;
+    row.querySelector<HTMLInputElement>('[data-field="to"]')!.value = entry.to;
+    row.querySelector<HTMLInputElement>('[data-field="whole"]')!.checked = entry.wholeWord;
+    list.appendChild(row);
+  });
+}
+
+function closeDictionary(): void {
+  const kept = dictionary.filter((e) => e.from.trim());
+  if (kept.length !== dictionary.length) changeDictionary(kept);
+  el("#dictionary-modal").classList.add("hidden");
+}
+
+function initDictionary(): void {
+  updateDictionaryButtons();
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".dictionary-open")) {
+    button.addEventListener("click", () => {
+      renderDictionaryEditor();
+      renderDictionaryTest();
+      el("#dictionary-modal").classList.remove("hidden");
+    });
+  }
+  const list = el<HTMLElement>("#dictionary-list");
+  list.addEventListener("input", (event) => {
+    const input = event.target as HTMLInputElement;
+    const entry = dictionary[Number(input.closest<HTMLElement>(".dictionary-row")?.dataset.index)];
+    if (!entry) return;
+    if (input.dataset.field === "from") entry.from = input.value;
+    if (input.dataset.field === "to") entry.to = input.value;
+    if (input.dataset.field === "whole") entry.wholeWord = input.checked;
+    changeDictionary([...dictionary]);
+  });
+  list.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action="remove"]');
+    if (!button) return;
+    dictionary.splice(Number(button.closest<HTMLElement>(".dictionary-row")?.dataset.index), 1);
+    changeDictionary([...dictionary]);
+    renderDictionaryEditor();
+  });
+  el("#dictionary-add").addEventListener("click", () => {
+    changeDictionary([...dictionary, { from: "", to: "", wholeWord: true }]);
+    renderDictionaryEditor();
+    const inputs = list.querySelectorAll<HTMLInputElement>('[data-field="from"]');
+    inputs[inputs.length - 1]?.focus();
+  });
+  el("#dictionary-reset").addEventListener("click", () => {
+    localStorage.removeItem(DICTIONARY_STORAGE_KEY);
+    changeDictionary(loadDictionary());
+    renderDictionaryEditor();
+  });
+  el("#dictionary-test-input").addEventListener("input", renderDictionaryTest);
+  el("#dictionary-done").addEventListener("click", closeDictionary);
+  el("#dictionary-close").addEventListener("click", closeDictionary);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -10043,6 +10146,7 @@ async function main(): Promise<void> {
   initChapter();
   initVoiceStudio();
   initProjects();
+  initDictionary();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
