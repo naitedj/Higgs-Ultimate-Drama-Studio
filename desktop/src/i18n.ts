@@ -731,6 +731,13 @@ export const RU: Record<string, string> = {
   "Speed applied": "Скорость изменена",
   "Speed from": "Скорость от",
   "to": "до",
+  // Speaker Gallery: a new recording dropped on a card that has one
+  "This card already has a voice": "В этой карточке уже есть голос",
+  "The card": "В карточке",
+  "already has a recording. Make a new voice from the new recording, or replace the recording in this card?":
+    "уже есть запись. Сделать из новой записи новый голос или заменить запись в этой карточке?",
+  "Replace in": "Заменить в",
+  "New voice": "Новый голос",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

@@ -2357,3 +2357,6 @@ input[type="range"]::-moz-range-thumb {
 .montage-output { border: 1px solid var(--border); border-radius: 4px; margin-top: 12px; padding: 12px; }
 .montage-output audio { width: 100%; }
 .recent-montage { flex: 0 0 auto; font-size: 11px; min-height: 24px; padding: 2px 8px; }
+.choice-panel { max-width: 520px; width: min(520px, 92vw); }
+.choice-message { color: var(--text-secondary); font-size: 13px; line-height: 1.5; margin: 0; padding: 4px 16px 12px; }
+#choice-modal { z-index: 1200; }

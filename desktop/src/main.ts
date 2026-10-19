@@ -2296,8 +2296,73 @@ function applyFinishReference(path: string, name: string): void {
   showRefPreview("finish", path);
 }
 
+/**
+ * A dialog with several answers; resolves to the chosen answer's value, or null
+ * when it is dismissed (Escape or the backdrop).
+ */
+function askChoice(
+  title: string,
+  message: string,
+  choices: Array<{ value: string; label: string; primary?: boolean }>,
+): Promise<string | null> {
+  const modal = el<HTMLElement>("#choice-modal");
+  el("#choice-title").textContent = title;
+  el("#choice-message").textContent = message;
+  const actions = el<HTMLElement>("#choice-actions");
+  actions.innerHTML = "";
+  return new Promise((resolve) => {
+    const finish = (value: string | null) => {
+      modal.classList.add("hidden");
+      document.removeEventListener("keydown", onKey);
+      modal.onclick = null;
+      resolve(value);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") finish(null);
+    };
+    for (const choice of choices) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `compact-button${choice.primary ? " primary" : ""}`;
+      button.textContent = choice.label;
+      button.addEventListener("click", () => finish(choice.value));
+      actions.appendChild(button);
+    }
+    modal.onclick = (event) => {
+      if (event.target === modal) finish(null);
+    };
+    document.addEventListener("keydown", onKey);
+    modal.classList.remove("hidden");
+    actions.querySelector<HTMLButtonElement>(".primary")?.focus();
+  });
+}
+
 async function applyGalleryReference(path: string, name: string): Promise<void> {
   let persona = selectedGalleryPersona();
+  // A card that already has a voice is not overwritten without asking: the new
+  // recording would replace its reference.wav and the old voice would be lost.
+  if (persona?.refPath) {
+    const answer = await askChoice(
+      t("This card already has a voice"),
+      `${t("The card")} «${persona.name}» ${t("already has a recording. Make a new voice from the new recording, or replace the recording in this card?")}`,
+      [
+        { value: "cancel", label: t("Cancel") },
+        { value: "replace", label: `${t("Replace in")} «${persona.name}»` },
+        { value: "new", label: t("New voice"), primary: true },
+      ],
+    );
+    if (answer === "new") {
+      persona = createBlankPersona();
+      speakerPersonas.push(persona);
+      selectedGalleryPersonaId = persona.id;
+    } else if (answer === "replace") {
+      // The Drama 3 voice was made from the old recording.
+      if (persona.dramaVoicePath) persona.dramaVoiceText = "";
+    } else {
+      renderSpeakerGalleryEditor();
+      return;
+    }
+  }
   if (!persona) {
     persona = createBlankPersona();
     speakerPersonas.push(persona);
@@ -2987,7 +3052,8 @@ function initSpeakerPersonas(): void {
     persona.name = el<HTMLInputElement>("#speaker-gallery-name").value || "Speaker";
     persona.updatedAt = Date.now();
     persistSpeakerPersonas();
-    scheduleSpeakerPersonaFolderSync(persona);
+    // The folder follows the name: it is updated on "change" (when typing ends),
+    // not per keystroke, which left a folder for every partial name.
     setGalleryAvatar(persona.name, persona.photoPath);
   });
   el<HTMLInputElement>("#speaker-gallery-name").addEventListener("change", () => {
@@ -8172,6 +8238,8 @@ async function main(): Promise<void> {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
       addMontageClip,
       montageResult: () => montageResult,
+      applyGalleryReference,
+      personas: () => speakerPersonas.map((p) => ({ id: p.id, name: p.name, refPath: p.refPath, refText: p.refText })),
     };
   }
   initGenerate();
