@@ -44,6 +44,7 @@ import {
 import { buildApiExample as buildApiExampleSnippet } from "./apiExamples";
 import {
   convertChannels,
+  shiftPitchAndTempo,
   loadPauseTrimSettings,
   pcmToResult,
   resamplePcm,
@@ -1457,10 +1458,11 @@ function switchMode(mode: Mode): void {
     content.classList.toggle("hidden", content.id !== `mode-${mode}`);
   }
   // Hide generation UI in utility views.
-  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter";
+  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio";
   if (mode === "batch") refreshBatchPersonaOptions();
   if (mode === "montage") renderMontageHistorySelect();
   if (mode === "chapter") refreshChapterVoiceOptions();
+  if (mode === "voicestudio") renderStudioSources();
   if (mode === "transcript") void refreshTranscriptModelNote();
   if (mode === "transcript" || mode === "clone") void refreshVoiceCleanNote();
   el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility || activeEngine === "drama");
@@ -4691,7 +4693,7 @@ function applyEngineKind(kind: EngineKind): void {
   for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
     if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
   }
-  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter";
+  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio";
   switchMode(unavailable ? "tts" : currentMode);
   if (drama) renderDramaChips();
   else void refreshHiggsChips();
@@ -5268,7 +5270,7 @@ function renderDramaVoiceSelect(): void {
   select.innerHTML = "";
   for (const name of dramaVoiceNames()) {
     // Shared voices of scenes are for the scene tab, not for a single voice.
-    if (name.startsWith(SCENE_VOICE_PREFIX)) continue;
+    if (isHiddenVoice(name)) continue;
     const option = document.createElement("option");
     option.value = name;
     option.textContent = name === "none" ? t("none (the model chooses)") : name;
@@ -8201,7 +8203,7 @@ function refreshChapterVoiceOptions(): void {
   const select = document.querySelector<HTMLSelectElement>("#chapter-voice");
   if (!select) return;
   const current = select.value || select.dataset.saved || "none";
-  const names = dramaVoiceNames().filter((n) => !n.startsWith(SCENE_VOICE_PREFIX));
+  const names = dramaVoiceNames().filter((n) => !isHiddenVoice(n));
   if (!names.includes(current)) names.push(current);
   select.innerHTML = names
     .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n === "none" ? t("none (the model chooses)") : n)}</option>`)
@@ -8661,6 +8663,250 @@ function initChapter(): void {
   el("#chapter-to-montage").addEventListener("click", () => {
     if (chapterResult) addMontageClip(t("Chapter"), chapterResult, "chapter");
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Voice Studio: a gallery voice slightly changed. Its recordings are shifted in
+// pitch and tempo, Drama 3 copies the changed recordings; a trial take uses a
+// temporary voice, and what is liked is saved as a new gallery voice.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const STUDIO_VOICE_PREFIX = "studio-";
+const STUDIO_STORAGE_KEY = "dramaStudio.voiceStudio";
+let studioBusy = false;
+let studioAudioUrl = "";
+
+/** Voices that live only in the loaded model for a scene or a studio trial. */
+function isHiddenVoice(name: string): boolean {
+  return name.startsWith(SCENE_VOICE_PREFIX) || name.startsWith(STUDIO_VOICE_PREFIX);
+}
+
+type StudioSettings = { source: string; pitch: number; tempo: number; style: string; phrase: string };
+
+function readStudioSettings(): StudioSettings {
+  return {
+    source: el<HTMLSelectElement>("#studio-source").value,
+    pitch: parseFloat(el<HTMLInputElement>("#studio-pitch").value) || 0,
+    tempo: parseFloat(el<HTMLInputElement>("#studio-tempo").value) || 1,
+    style: el<HTMLInputElement>("#studio-style").value,
+    phrase: el<HTMLTextAreaElement>("#studio-phrase").value,
+  };
+}
+
+function saveStudioSettings(): void {
+  localStorage.setItem(STUDIO_STORAGE_KEY, JSON.stringify(readStudioSettings()));
+}
+
+function renderStudioLabels(): void {
+  const s = readStudioSettings();
+  el("#studio-val-pitch").textContent = s.pitch > 0 ? `+${s.pitch}` : String(s.pitch);
+  el("#studio-val-tempo").textContent = `${s.tempo.toFixed(2)}×`;
+}
+
+function renderStudioSources(): void {
+  const select = el<HTMLSelectElement>("#studio-source");
+  const current = select.value || select.dataset.saved || "";
+  const personas = mixablePersonas();
+  select.innerHTML = personas.length === 0
+    ? `<option value="">${escapeHtml(t("No voices with a recording and its transcript in the Speaker Gallery"))}</option>`
+    : personas.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  if (personas.some((p) => p.id === current)) select.value = current;
+}
+
+function setStudioStatus(text: string): void {
+  el("#studio-status").textContent = text;
+}
+
+function setStudioBusy(busy: boolean): void {
+  studioBusy = busy;
+  for (const id of ["#studio-preview-ref", "#studio-test", "#studio-test-original", "#studio-save"]) {
+    el<HTMLButtonElement>(id).disabled = busy;
+  }
+}
+
+/** What the settings change, in words, for statuses and the new voice's name. */
+function studioChangeLabel(s: StudioSettings): string {
+  const parts: string[] = [];
+  if (s.pitch > 0) parts.push(`${t("higher by")} ${s.pitch}`);
+  if (s.pitch < 0) parts.push(`${t("lower by")} ${-s.pitch}`);
+  if (s.tempo < 0.995) parts.push(t("slower"));
+  if (s.tempo > 1.005) parts.push(t("faster"));
+  return parts.join(", ");
+}
+
+function studioPersona(): SpeakerPersona {
+  const persona = findPersona(el<HTMLSelectElement>("#studio-source").value);
+  if (!persona) throw new Error(t("Choose a voice from the Speaker Gallery"));
+  return persona;
+}
+
+/** The voice's recordings changed by the settings, written to temporary WAV files. */
+async function studioRecordings(persona: SpeakerPersona, s: StudioSettings, onlyMain = false): Promise<{ key: string; recordings: Array<{ path: string; name: string; text: string }> }> {
+  const key = shortHash(`${persona.id}|${persona.updatedAt}|${s.pitch}|${s.tempo}`);
+  const sources = personaRecordings(persona).slice(0, onlyMain ? 1 : undefined);
+  const recordings: Array<{ path: string; name: string; text: string }> = [];
+  for (let i = 0; i < sources.length; i++) {
+    const source = sources[i];
+    const audio = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: source.path });
+    const changed = shiftPitchAndTempo(parseWavPcm(audio.wavBase64), s.pitch, s.tempo);
+    const path = await invoke<string>("drama_temp_path", { name: `studio_${key}_${i}.wav` });
+    await invoke("save_binary_file", { path, base64Data: pcmToResult(changed).wavBase64 });
+    recordings.push({ path, name: source.name, text: source.text });
+  }
+  return { key, recordings };
+}
+
+async function playStudio(result: GenerationResult): Promise<void> {
+  if (studioAudioUrl) URL.revokeObjectURL(studioAudioUrl);
+  studioAudioUrl = URL.createObjectURL(await base64ToBlobAsync(result.wavBase64, "audio/wav"));
+  const audio = el<HTMLAudioElement>("#studio-audio");
+  audio.src = studioAudioUrl;
+  audio.volume = audioPlayer.volume;
+  await audio.play().catch(() => {});
+}
+
+async function studioPreviewRecording(): Promise<void> {
+  if (studioBusy) return;
+  setStudioBusy(true);
+  try {
+    const s = readStudioSettings();
+    const { recordings } = await studioRecordings(studioPersona(), s, true);
+    const audio = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: recordings[0].path });
+    setStudioStatus(`${t("Changed recording")}: ${studioChangeLabel(s) || t("no changes")}`);
+    await playStudio(audio);
+  } catch (e) {
+    showToast(String(e), "error");
+  } finally {
+    setStudioBusy(false);
+  }
+}
+
+/** A trial take of the phrase: with the changed voice (a temporary one), or the original. */
+async function studioTrialTake(original: boolean): Promise<void> {
+  if (studioBusy) return;
+  setStudioBusy(true);
+  try {
+    const s = readStudioSettings();
+    const persona = studioPersona();
+    if (!s.phrase.trim()) throw new Error(t("Type a trial phrase"));
+    if (!(await ensureDramaLoaded())) return;
+    let voice: string;
+    if (original) {
+      voice = persona.dramaVoiceName || persona.name;
+      if (!persona.dramaVoicePath || !dramaStatus.modelInfo?.voices.some((v) => v.name === voice)) {
+        throw new Error(t("This voice has no Drama 3 voice yet: create it in the Speaker Gallery"));
+      }
+    } else {
+      const { key, recordings } = await studioRecordings(persona, s);
+      voice = `${STUDIO_VOICE_PREFIX}${key}`;
+      if (!dramaStatus.modelInfo?.voices.some((v) => v.name === voice)) {
+        setStudioStatus(t("Making the changed voice, about a minute…"));
+        const outPath = await invoke<string>("drama_temp_path", { name: `studio_${key}.voice.gguf` });
+        await invoke("drama_voice_make", {
+          request: {
+            references: recordings.map((r) => ({ path: r.path, transcript: r.text.trim() })),
+            voices: [],
+            outPath,
+            modelPath: null,
+          },
+          addAs: voice,
+        });
+        await refreshDramaStatus();
+      }
+    }
+    setStudioStatus(t("Generating the trial take…"));
+    const result = await invoke<DramaGenerationResult>("drama_generate", {
+      request: {
+        text: `${characterStyleHint({ style: s.style })}${s.phrase.trim()}`,
+        voice,
+        options: dramaRequestOptions(readDramaOptionsFromUi()),
+        streamPlayback: false,
+      },
+    });
+    const take = autoShortenPauses(result);
+    setDramaLastSeed(result.seed);
+    setStudioStatus(original
+      ? `${t("Original voice")} · seed ${result.seed}`
+      : `${t("Changed voice")}: ${studioChangeLabel(s) || t("no changes")}${s.style.trim() ? ` · ${s.style.trim()}` : ""} · seed ${result.seed}`);
+    await playStudio(take);
+  } catch (e) {
+    setStudioStatus("");
+    showToast(String(e), "error");
+  } finally {
+    setStudioBusy(false);
+  }
+}
+
+/** Saves the changed recordings as a new gallery voice and makes its Drama 3 voice. */
+async function studioSaveVoice(): Promise<void> {
+  if (studioBusy) return;
+  let persona: SpeakerPersona;
+  try {
+    persona = studioPersona();
+  } catch (e) {
+    showToast(String(e), "warning");
+    return;
+  }
+  const s = readStudioSettings();
+  const change = studioChangeLabel(s);
+  const name = await askText(t("💾 Save as a new voice"), t("The changed voice becomes a new card in the Speaker Gallery. Its name:"), change ? `${persona.name} — ${change}` : `${persona.name} 2`);
+  if (!name) return;
+  setStudioBusy(true);
+  try {
+    const { recordings } = await studioRecordings(persona, s);
+    const created = createBlankPersona();
+    created.name = name;
+    const main = await storeSpeakerAsset(created, recordings[0].path, "audio");
+    created.refPath = main.path;
+    created.refName = recordings[0].name;
+    created.refText = recordings[0].text.trim();
+    created.extraRefs = [];
+    for (const recording of recordings.slice(1)) {
+      const stored = await invoke<{ path: string }>("store_speaker_extra_asset", {
+        speakerId: created.id,
+        speakerName: created.name,
+        sourcePath: recording.path,
+      });
+      created.extraRefs.push({ path: stored.path, name: recording.name, text: recording.text.trim() });
+    }
+    created.notes = `${t("Voice Studio")}: ${t("from")} «${persona.name}»${change ? `, ${change}` : ""}${s.style.trim() ? `; ${t("manner for it")}: ${s.style.trim()}` : ""}`;
+    speakerPersonas.push(created);
+    saveSpeakerPersonas();
+    setStudioStatus(t("Making the Drama 3 voice of the new card…"));
+    await makeDramaVoiceForPersona(created);
+    renderStudioSources();
+    setStudioStatus(`${t("Saved as a new voice")}: ${created.name}`);
+  } catch (e) {
+    showToast(`${t("Could not save the voice")}: ${e}`, "error");
+  } finally {
+    setStudioBusy(false);
+  }
+}
+
+function initVoiceStudio(): void {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STUDIO_STORAGE_KEY) || "{}") as Partial<StudioSettings>;
+    if (typeof saved.pitch === "number") el<HTMLInputElement>("#studio-pitch").value = String(saved.pitch);
+    if (typeof saved.tempo === "number") el<HTMLInputElement>("#studio-tempo").value = String(saved.tempo);
+    if (typeof saved.style === "string") el<HTMLInputElement>("#studio-style").value = saved.style;
+    if (typeof saved.phrase === "string" && saved.phrase.trim()) el<HTMLTextAreaElement>("#studio-phrase").value = saved.phrase;
+    if (typeof saved.source === "string") el<HTMLSelectElement>("#studio-source").dataset.saved = saved.source;
+  } catch {
+    // Defaults stay.
+  }
+  renderStudioSources();
+  renderStudioLabels();
+  for (const id of ["#studio-pitch", "#studio-tempo"]) {
+    el(id).addEventListener("input", () => {
+      renderStudioLabels();
+      saveStudioSettings();
+    });
+  }
+  for (const id of ["#studio-source", "#studio-style", "#studio-phrase"]) el(id).addEventListener("change", saveStudioSettings);
+  el("#studio-preview-ref").addEventListener("click", () => void studioPreviewRecording());
+  el("#studio-test").addEventListener("click", () => void studioTrialTake(false));
+  el("#studio-test-original").addEventListener("click", () => void studioTrialTake(true));
+  el("#studio-save").addEventListener("click", () => void studioSaveVoice());
 }
 
 function initMontage(): void {
@@ -9429,6 +9675,7 @@ async function main(): Promise<void> {
   initSpeakerExtras();
   initVoiceMixAndLock();
   initChapter();
+  initVoiceStudio();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {

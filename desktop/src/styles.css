@@ -2429,3 +2429,6 @@ input[type="range"]::-moz-range-thumb {
 .chapter-piece-speaker-select { border-color: var(--speaker-color); color: var(--speaker-color); font-size: 12px; font-weight: 700; max-width: 220px; min-height: 26px; padding: 2px 6px; }
 .scene-character-row { grid-template-columns: 28px minmax(110px, 0.7fr) minmax(140px, 0.9fr) minmax(150px, 1.2fr) minmax(150px, 1fr) auto; }
 .chapter-style-input { min-width: 230px; }
+.studio-grid { display: grid; gap: 12px 20px; grid-template-columns: 1fr 1fr; margin: 10px 0; }
+.studio-grid .chapter-field .select-input, .studio-grid .chapter-field .text-input { flex: 1; min-width: 0; }
+.studio-audio { margin-top: 8px; width: 100%; }

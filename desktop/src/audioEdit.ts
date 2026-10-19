@@ -342,3 +342,16 @@ export function timeStretch(pcm: WavPcm, speed: number): WavPcm {
   }
   return { sampleRate: sr, channels: ch, samples };
 }
+
+/**
+ * The voice `semitones` higher (above 0) or lower, and `tempo` times faster, in one
+ * pass: stretched by tempo/ratio without changing pitch, then resampled by the ratio,
+ * which moves the pitch and brings the length back. Small shifts (±3 semitones)
+ * sound natural; the formants move with the pitch.
+ */
+export function shiftPitchAndTempo(pcm: WavPcm, semitones: number, tempo: number): WavPcm {
+  const ratio = Math.pow(2, semitones / 12);
+  const stretched = timeStretch(pcm, Math.min(SPEED_MAX, Math.max(SPEED_MIN, tempo / ratio)));
+  if (Math.abs(ratio - 1) < 0.001) return stretched;
+  return resamplePcm({ ...stretched, sampleRate: Math.round(pcm.sampleRate * ratio) }, pcm.sampleRate);
+}

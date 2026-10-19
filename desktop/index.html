@@ -185,6 +185,7 @@
             <button class="mode-tab" data-mode="finish" role="tab" aria-selected="false">Continue Speech</button>
             <button class="mode-tab" data-mode="multi" role="tab" aria-selected="false">Multi Speaker</button>
             <button class="mode-tab drama-only hidden" data-mode="chapter" role="tab" aria-selected="false">Chapter</button>
+            <button class="mode-tab drama-only hidden" data-mode="voicestudio" role="tab" aria-selected="false">Voice Studio</button>
             <button class="mode-tab" data-mode="api" role="tab" aria-selected="false">API</button>
             <button class="mode-tab" data-mode="speakers" role="tab" aria-selected="false">Speaker Gallery</button>
             <button class="mode-tab" data-mode="batch" role="tab" aria-selected="false">Batch</button>
@@ -918,6 +919,46 @@
                 <button id="chapter-to-montage" class="compact-button" type="button">+ To montage</button>
               </div>
             </div>
+          </div>
+
+          <!-- ═══ Voice Studio: a saved voice, slightly changed ═══ -->
+          <div class="mode-content hidden" id="mode-voicestudio">
+            <div class="history-head">
+              <h3>Voice Studio</h3>
+            </div>
+            <p class="input-hint">Take a voice from the Speaker Gallery and change it slightly: its recordings are made higher or lower and faster or slower, and Drama 3 copies the changed recordings. Listen to the recording, try a take, and save what you like as a new voice; the original stays as it is.</p>
+            <div class="studio-grid">
+              <label class="chapter-field">
+                <span>Voice</span>
+                <select id="studio-source" class="select-input"></select>
+              </label>
+              <label class="slider-label">
+                <span class="slider-name">Pitch</span>
+                <span class="tip" tabindex="0" data-tip="In semitones. ±1–3 sounds natural; more becomes cartoonish, and Drama 3 copies that too.">?</span>
+                <input type="range" id="studio-pitch" min="-4" max="4" step="0.5" value="0" />
+                <span class="slider-value" id="studio-val-pitch">0</span>
+              </label>
+              <label class="slider-label">
+                <span class="slider-name">Tempo</span>
+                <span class="tip" tabindex="0" data-tip="Below 1: an unhurried voice, above 1: a quicker one. The pitch does not change.">?</span>
+                <input type="range" id="studio-tempo" min="0.75" max="1.3" step="0.05" value="1" />
+                <span class="slider-value" id="studio-val-tempo">1.00×</span>
+              </label>
+              <label class="chapter-field studio-style-field" title="How the voice speaks in the trial take: pick or type a direction in English. Emotion is changed here, not in the recording.">
+                <span>Manner</span>
+                <input id="studio-style" class="text-input" type="text" list="drama-style-presets" spellcheck="false" placeholder="emotional, expressive" />
+              </label>
+            </div>
+            <label class="field-label" for="studio-phrase">Trial phrase</label>
+            <textarea id="studio-phrase" class="text-area" rows="2">Вечером в доме стало тихо. Только часы в гостиной отсчитывали минуты.</textarea>
+            <div class="action-row">
+              <button id="studio-preview-ref" class="compact-button" type="button">▶ Listen to the changed recording</button>
+              <button id="studio-test" class="primary-btn" type="button">▶ Trial take</button>
+              <button id="studio-test-original" class="compact-button" type="button">Take with the original voice</button>
+              <button id="studio-save" class="compact-button primary" type="button">💾 Save as a new voice</button>
+            </div>
+            <p id="studio-status" class="input-hint"></p>
+            <audio id="studio-audio" class="studio-audio" controls preload="auto"></audio>
           </div>
 
           <!-- ═══ Montage: join fragments into one track ═══ -->
