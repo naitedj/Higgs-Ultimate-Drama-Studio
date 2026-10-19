@@ -7,6 +7,8 @@ mod engine;
 pub mod envdeps;
 pub mod parakeet;
 mod recorder;
+// pub: чтобы headless-пример drama_smoke мог проверить движок Drama 3 с настоящим speech.dll.
+pub mod speech_engine;
 // pub: чтобы headless-пример voiceclean_test мог дергать clean_voice напрямую.
 pub mod voiceclean;
 
@@ -15,6 +17,7 @@ use engine::{
     ProgressCallback,
 };
 use nvml_wrapper::Nvml;
+use speech_engine::{SpeechEngine, SpeechError, VoiceMakeRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Seek, Write};
@@ -45,6 +48,8 @@ struct AppState {
     api_speakers: Arc<Mutex<Vec<ApiSpeakerPersona>>>,
     generation_queue: Arc<Mutex<()>>,
     minimize_to_tray: Arc<AtomicBool>,
+    /// Второй движок: speech.cpp с моделью Drama 3 (см. speech_engine.rs).
+    drama: Mutex<Option<Arc<SpeechEngine>>>,
 }
 
 impl AppState {
@@ -1010,6 +1015,10 @@ fn cancel_generation(state: State<'_, AppState>) -> Result<(), String> {
     let guard = state.engine.lock().unwrap();
     if let Some(engine) = guard.as_ref() {
         engine.cancel();
+    }
+    drop(guard);
+    if let Some(drama) = state.drama.lock().unwrap().as_ref() {
+        drama.cancel();
     }
     Ok(())
 }
@@ -4218,6 +4227,21 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn cancel_active_generation(app: &AppHandle) {
+    let drama = app
+        .state::<AppState>()
+        .drama
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned());
+    if let Some(drama) = drama {
+        if drama.is_generating() {
+            drama.cancel();
+            let _ = app.emit(
+                "generation-progress",
+                serde_json::json!({ "current": 0, "total": 1, "phase": "cancelling" }),
+            );
+        }
+    }
     let engine = app
         .state::<AppState>()
         .engine
@@ -4240,6 +4264,352 @@ fn cancel_active_generation(app: &AppHandle) {
 // ═══════════════════════════════════════════════════════════════════════════
 // Entry point
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Drama 3 (speech.cpp)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn map_speech_err(e: &SpeechError) -> String {
+    e.to_string()
+}
+
+fn drama_engine(state: &AppState) -> Result<Arc<SpeechEngine>, String> {
+    state
+        .drama
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "движок Drama 3 не загружен: укажите speech.dll".to_string())
+}
+
+fn drama_status_json(engine: Option<&Arc<SpeechEngine>>) -> serde_json::Value {
+    match engine {
+        None => serde_json::json!({
+            "libraryLoaded": false,
+            "modelLoaded": false,
+            "generating": false,
+        }),
+        Some(engine) => serde_json::json!({
+            "libraryLoaded": true,
+            "libraryPath": engine.library_path().to_string_lossy(),
+            "version": engine.version(),
+            "apiVersion": engine.api_version(),
+            "modelLoaded": engine.is_model_loaded(),
+            "modelPath": engine.model_path(),
+            "modelInfo": engine.model_info(),
+            "generating": engine.is_generating(),
+        }),
+    }
+}
+
+fn emit_drama_status(app: &AppHandle, engine: Option<&Arc<SpeechEngine>>) {
+    let _ = app.emit("drama-status", drama_status_json(engine));
+}
+
+/// Загружает speech.dll (или возвращает уже загруженную по тому же пути).
+async fn ensure_drama_library(
+    app: &AppHandle,
+    state: &AppState,
+    library_path: Option<String>,
+) -> Result<Arc<SpeechEngine>, String> {
+    let requested = library_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    if let Some(current) = state.drama.lock().unwrap().clone() {
+        if requested.as_deref().map_or(true, |p| p == current.library_path()) {
+            return Ok(current);
+        }
+        if current.is_model_loaded() {
+            return Err(
+                "сначала выгрузите модель Drama 3, потом меняйте speech.dll".to_string(),
+            );
+        }
+    }
+    let path = requested
+        .or_else(|| speech_engine::default_library_path(&app_root_dir()))
+        .ok_or_else(|| {
+            "speech.dll не найдена: укажите путь к ней кнопкой «Обзор»".to_string()
+        })?;
+
+    let engine = tauri::async_runtime::spawn_blocking(move || SpeechEngine::load(&path))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
+        .map_err(|e| map_speech_err(&e))?;
+    let engine = Arc::new(engine);
+
+    let log_app = app.clone();
+    speech_engine::set_log_sink(Some(Arc::new(move |level: &str, line: &str| {
+        let _ = log_app.emit("drama-log", serde_json::json!({ "level": level, "line": line }));
+    })));
+
+    *state.drama.lock().unwrap() = Some(engine.clone());
+    emit_drama_status(app, Some(&engine));
+    Ok(engine)
+}
+
+/// Пути по умолчанию: speech.dll и модель Drama 3, если они найдены.
+#[tauri::command]
+fn drama_default_paths() -> serde_json::Value {
+    serde_json::json!({
+        "libraryPath": speech_engine::default_library_path(&app_root_dir()),
+        "modelPath": speech_engine::default_model_path(),
+        "modelsDir": speech_engine::models_dir(),
+        "defaultTopK": speech_engine::DEFAULT_TOP_K,
+    })
+}
+
+#[tauri::command]
+async fn drama_load_library(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    library_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let engine = ensure_drama_library(&app, &state, library_path).await?;
+    let mut status = drama_status_json(Some(&engine));
+    status["devices"] = serde_json::json!(engine.devices());
+    Ok(status)
+}
+
+#[tauri::command]
+fn drama_status(state: State<'_, AppState>) -> serde_json::Value {
+    drama_status_json(state.drama.lock().unwrap().as_ref())
+}
+
+/// Устройства speech.cpp со свободной памятью.
+#[tauri::command]
+fn drama_devices(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!(drama_engine(&state)?.devices()))
+}
+
+/// Информация о файле модели без загрузки: опции, значения по умолчанию, диапазоны.
+#[tauri::command]
+async fn drama_model_file_info(
+    state: State<'_, AppState>,
+    model_path: String,
+) -> Result<serde_json::Value, String> {
+    let engine = drama_engine(&state)?;
+    let info = tauri::async_runtime::spawn_blocking(move || engine.model_info_from_file(&model_path))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
+        .map_err(|e| map_speech_err(&e))?;
+    Ok(serde_json::json!(info))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DramaLoadModelRequest {
+    library_path: Option<String>,
+    model_path: Option<String>,
+    /// "auto", "gpu", "cpu" или имя устройства ("Vulkan0").
+    device: Option<String>,
+    threads: Option<i32>,
+    warmup: Option<bool>,
+}
+
+#[tauri::command]
+async fn drama_load_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: DramaLoadModelRequest,
+) -> Result<serde_json::Value, String> {
+    let engine = ensure_drama_library(&app, &state, request.library_path.clone()).await?;
+    let model_path = request
+        .model_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .or_else(|| speech_engine::default_model_path().map(|p| p.to_string_lossy().into_owned()))
+        .ok_or_else(|| {
+            format!(
+                "модель Drama 3 не найдена в папке моделей speech.cpp: укажите файл {} кнопкой «Обзор»",
+                speech_engine::DEFAULT_MODEL_FILE
+            )
+        })?;
+
+    let _ = app.emit("drama-status", serde_json::json!({ "phase": "loading", "modelPath": model_path }));
+    let queue = state.generation_queue.clone();
+    let load_engine = engine.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _queue = queue.lock().map_err(|_| "generation queue poisoned".to_string())?;
+        load_engine
+            .load_model(
+                &model_path,
+                request.device.as_deref(),
+                request.threads,
+                request.warmup.unwrap_or(false),
+            )
+            .map_err(|e| map_speech_err(&e))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?;
+
+    emit_drama_status(&app, Some(&engine));
+    let info = result?;
+    Ok(serde_json::json!({
+        "success": true,
+        "modelInfo": info,
+        "devices": engine.devices(),
+    }))
+}
+
+#[tauri::command]
+async fn drama_unload_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let engine = drama_engine(&state)?;
+    let unload_engine = engine.clone();
+    tauri::async_runtime::spawn_blocking(move || unload_engine.unload_model())
+        .await
+        .map_err(|e| format!("task join error: {e}"))?;
+    emit_drama_status(&app, Some(&engine));
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DramaGenerateRequest {
+    text: String,
+    /// "none" или имя добавленного голоса.
+    voice: Option<String>,
+    /// Опции speech.cpp по их именам: seed, top_k, top_p, temperature, max_seconds, experts_on_cpu…
+    options: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Отправлять звук в интерфейс кусками по мере готовности.
+    stream_playback: Option<bool>,
+}
+
+#[tauri::command]
+async fn drama_generate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: DramaGenerateRequest,
+) -> Result<serde_json::Value, String> {
+    let engine = drama_engine(&state)?;
+    let sample_rate = engine
+        .model_info()
+        .map(|info| info.sample_rate)
+        .ok_or_else(|| map_speech_err(&SpeechError::NoModel))?;
+    let queue = state.generation_queue.clone();
+    let options = request.options.unwrap_or_default();
+    let voice = request.voice.unwrap_or_else(|| "none".to_string());
+
+    // Звук кусками — тем же событием, что у Higgs; плюс сколько секунд уже готово.
+    let stream = request.stream_playback.unwrap_or(false);
+    let chunk_app = app.clone();
+    let produced = Arc::new(AtomicU64::new(0));
+    let on_audio: speech_engine::AudioCallback = Arc::new(move |chunk: &[f32]| {
+        let start = produced.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+        let total = start + chunk.len() as u64;
+        if stream {
+            let wav_base64 = AudioResult {
+                sample_rate,
+                channels: 1,
+                samples: chunk.to_vec(),
+            }
+            .encode_base64_wav();
+            let _ = chunk_app.emit(
+                "generation-audio-chunk",
+                serde_json::json!({
+                    "sampleRate": sample_rate,
+                    "channels": 1,
+                    "startSample": start,
+                    "sampleCount": chunk.len(),
+                    "wavBase64": wav_base64,
+                    "isFinal": false,
+                }),
+            );
+        }
+        let _ = chunk_app.emit(
+            "drama-progress",
+            serde_json::json!({ "seconds": total as f64 / sample_rate.max(1) as f64 }),
+        );
+    });
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _queue = queue.lock().map_err(|_| "generation queue poisoned".to_string())?;
+        engine
+            .synthesize(&request.text, &voice, &options, Some(on_audio))
+            .map_err(|e| map_speech_err(&e))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    let seconds = result.samples.len() as f64 / result.sample_rate.max(1) as f64;
+    let audio = AudioResult {
+        sample_rate: result.sample_rate,
+        channels: 1,
+        samples: result.samples,
+    };
+    Ok(serde_json::json!({
+        "sampleRate": audio.sample_rate,
+        "channels": 1,
+        "sampleCount": audio.samples.len(),
+        "seconds": seconds,
+        "wavBase64": audio.encode_base64_wav(),
+        "seed": result.seed,
+        "stop": result.stop,
+    }))
+}
+
+#[tauri::command]
+fn drama_cancel(state: State<'_, AppState>) {
+    if let Some(engine) = state.drama.lock().unwrap().as_ref() {
+        engine.cancel();
+    }
+}
+
+/// Добавляет файл голоса (.voice.gguf) в загруженную модель без перезапуска.
+#[tauri::command]
+async fn drama_voice_add(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let engine = drama_engine(&state)?;
+    let add_engine = engine.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || add_engine.voice_add(&name, &path))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
+        .map_err(|e| map_speech_err(&e))?;
+    emit_drama_status(&app, Some(&engine));
+    Ok(serde_json::json!(info))
+}
+
+/// Делает файл голоса Drama 3 из записей (любой формат: переводится в WAV) с их текстами
+/// и готовых файлов голосов; с `add_as` сразу добавляет его в загруженную модель.
+#[tauri::command]
+async fn drama_voice_make(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mut request: VoiceMakeRequest,
+    add_as: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let engine = drama_engine(&state)?;
+    for reference in &mut request.references {
+        reference.path = audio::ensure_wav(&reference.path).map_err(|e| e.to_string())?;
+    }
+    if let Some(parent) = Path::new(&request.out_path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let make_engine = engine.clone();
+    let (path, info) = tauri::async_runtime::spawn_blocking(move || {
+        let path = make_engine.voice_make(&request)?;
+        let info = match add_as.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+            Some(name) if make_engine.is_model_loaded() => Some(make_engine.voice_add(&name, &path)?),
+            _ => None,
+        };
+        Ok::<_, SpeechError>((path, info))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| map_speech_err(&e))?;
+    emit_drama_status(&app, Some(&engine));
+    Ok(serde_json::json!({ "path": path, "modelInfo": info }))
+}
+
+/// Последние строки журнала speech.cpp (загрузка модели, размещение слоёв, ошибки).
+#[tauri::command]
+fn drama_log() -> Vec<String> {
+    speech_engine::log_history()
+}
 
 /// Point `ort` (ONNX Runtime, used by Parakeet ASR via `load-dynamic`) at the
 /// `onnxruntime.dll` that ships next to the exe. Portable-first: no reliance on
@@ -4331,6 +4701,7 @@ pub fn run() {
             api_speakers: Arc::new(Mutex::new(Vec::new())),
             generation_queue: Arc::new(Mutex::new(())),
             minimize_to_tray: Arc::new(AtomicBool::new(false)),
+            drama: Mutex::new(None),
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -4385,6 +4756,18 @@ pub fn run() {
             hardware_snapshot,
             set_minimize_to_tray,
             quit_app,
+            drama_default_paths,
+            drama_load_library,
+            drama_status,
+            drama_devices,
+            drama_model_file_info,
+            drama_load_model,
+            drama_unload_model,
+            drama_generate,
+            drama_cancel,
+            drama_voice_add,
+            drama_voice_make,
+            drama_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Higgs Audio v3 Studio");
