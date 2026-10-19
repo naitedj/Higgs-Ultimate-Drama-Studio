@@ -2248,3 +2248,15 @@ input[type="range"]::-moz-range-thumb {
 .remark-button.voice { border-style: dashed; }
 .remark-button.risky { border-color: #b8862e; color: #e0a33a; }
 .drama-last-seed { font-variant-numeric: tabular-nums; min-width: 0; user-select: text; }
+.speaker-drama-badge {
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: auto;
+  padding: 1px 5px;
+}
+.speaker-drama-box #speaker-drama-make-btn { width: 100%; }
+.mini-state.warn { border-color: #b8862e; color: #e0a33a; }

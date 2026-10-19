@@ -110,6 +110,14 @@ struct SpeakerArchivePersona {
     normalize: bool,
     created_at: u64,
     updated_at: u64,
+    /// Файл голоса Drama 3 (.voice.gguf), имя, под которым он добавлен в модель,
+    /// и текст эталона, из которого он сделан (чтобы заметить, что текст поменяли).
+    #[serde(default)]
+    drama_voice_path: String,
+    #[serde(default)]
+    drama_voice_name: String,
+    #[serde(default)]
+    drama_voice_text: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3680,6 +3688,20 @@ fn speaker_cache_path(
     }))
 }
 
+/// Где лежит файл голоса Drama 3 голоса из галереи: в папке этого голоса.
+#[tauri::command]
+fn speaker_drama_voice_path(
+    app: AppHandle,
+    speaker_id: String,
+    speaker_name: String,
+) -> Result<serde_json::Value, String> {
+    let path = speaker_dir(&app, &speaker_id, &speaker_name)?.join("drama3.voice.gguf");
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "exists": path.exists(),
+    }))
+}
+
 #[tauri::command]
 fn save_binary_file(path: String, base64_data: String) -> Result<(), String> {
     let bytes = base64_decode(&base64_data).map_err(|e| e.to_string())?;
@@ -4746,6 +4768,7 @@ pub fn run() {
             store_speaker_asset,
             download_voicepack,
             speaker_cache_path,
+            speaker_drama_voice_path,
             write_speaker_metadata,
             export_speaker_zip,
             import_speaker_zip,

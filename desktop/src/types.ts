@@ -259,6 +259,12 @@ export type SpeakerPersona = {
   normalize: boolean;
   createdAt: number;
   updatedAt: number;
+  /** Drama 3 voice file (.voice.gguf) made from this reference; "" = not made. */
+  dramaVoicePath?: string;
+  /** Name the voice file is added to the Drama 3 model under. */
+  dramaVoiceName?: string;
+  /** Transcript the voice file was made with, to notice an edited transcript. */
+  dramaVoiceText?: string;
 };
 
 export type LinePointerDrag = {

@@ -574,6 +574,26 @@ export const RU: Record<string, string> = {
   "Audio ready": "Готово звука",
   "s": "с",
   "elapsed": "прошло",
+  // Drama 3 voices in the Speaker Gallery
+  "Drama 3 voice": "Голос Drama 3",
+  "Not created": "Не создан",
+  "Ready": "Готов",
+  "Creating…": "Создаётся…",
+  "Transcript changed: recreate": "Текст изменён — пересоздайте",
+  "Create Drama 3 voice": "Создать голос Drama 3",
+  "Recreate Drama 3 voice": "Пересоздать голос Drama 3",
+  "Creating the voice, about 1–2 minutes…": "Создаю голос, около 1–2 минут…",
+  "Drama 3 voice is ready": "Голос Drama 3 готов",
+  "Uses the reference audio and its transcript, which must match the recording word for word. Best: 10–20 s of clean speech that ends at the end of a sentence. Takes about 1–2 minutes.":
+    "Берутся эталонная запись и её текст — он должен совпадать с записью слово в слово. Лучше всего 10–20 с чистой речи, обрезанной по концу предложения. Создание занимает около 1–2 минут.",
+  "Add the reference audio first": "Сначала добавьте эталонную запись",
+  "Drama 3 needs the exact transcript of the reference: type it or use Auto-transcribe":
+    "Drama 3 нужен точный текст эталона: впишите его или нажмите «Автотранскрипт»",
+  "The transcript does not end with a full stop: the reference should end at the end of a sentence":
+    "Текст не заканчивается точкой: эталон лучше обрезать по концу предложения",
+  "Drama 3 voice created and added": "Голос Drama 3 создан и подключён",
+  "Drama 3 voice created; it will be added when the model loads": "Голос Drama 3 создан; он подключится при загрузке модели",
+  "Could not create the Drama 3 voice": "Не удалось создать голос Drama 3",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

@@ -60,7 +60,7 @@ import {
   setEngineKind,
   voiceNameFromPath,
 } from "./drama";
-import type { DramaOptions, EngineKind } from "./drama";
+import type { DramaOptions, DramaVoiceFile, EngineKind } from "./drama";
 import {
   cssVar,
   el,
@@ -2412,6 +2412,9 @@ function cleanPersona(raw: any): SpeakerPersona | null {
     normalize: Boolean(raw.normalize || raw.normalizeReference || raw.normalize_reference),
     createdAt: Number(raw.createdAt || raw.created_at || Date.now()),
     updatedAt: Number(raw.updatedAt || raw.updated_at || Date.now()),
+    dramaVoicePath: String(raw.dramaVoicePath || raw.drama_voice_path || ""),
+    dramaVoiceName: String(raw.dramaVoiceName || raw.drama_voice_name || ""),
+    dramaVoiceText: String(raw.dramaVoiceText || raw.drama_voice_text || ""),
   };
 }
 
@@ -2660,6 +2663,7 @@ function renderSpeakerGalleryList(): void {
         <strong>${escapeHtml(persona.name)}</strong>
         <span>${persona.refName ? escapeHtml(persona.refName) : "No reference audio"}</span>
       </span>
+      ${persona.dramaVoicePath ? `<span class="speaker-drama-badge" title="${escapeHtml(t("Drama 3 voice is ready"))}">Drama 3 ✓</span>` : ""}
     `;
     list.appendChild(item);
   }
@@ -2692,6 +2696,7 @@ function renderSpeakerGalleryEditor(): void {
     clearDropzone("#speaker-gallery-dropzone");
     hideRefPreview("gallery");
   }
+  renderSpeakerDramaState(persona);
 }
 
 function renderSpeakerPersonaUi(): void {
@@ -2716,6 +2721,7 @@ function renderSpeakerPersonaUi(): void {
 
   renderSpeakerGalleryList();
   renderSpeakerGalleryEditor();
+  renderDramaVoiceSelect();
   if (multiSpeakers.length > 0 && document.querySelector("#speaker-library")) renderMultiWorkflow();
   if (document.querySelector("#api-example-code")) renderApiExample();
 }
@@ -2961,6 +2967,11 @@ function initSpeakerPersonas(): void {
     persona.updatedAt = Date.now();
     persistSpeakerPersonas();
     scheduleSpeakerPersonaFolderSync(persona);
+    renderSpeakerDramaState(persona);
+  });
+  el("#speaker-drama-make-btn").addEventListener("click", () => {
+    const persona = selectedGalleryPersona();
+    if (persona) void makeDramaVoiceForPersona(persona);
   });
   el<HTMLTextAreaElement>("#speaker-gallery-notes").addEventListener("input", () => {
     const persona = selectedGalleryPersona();
@@ -4635,11 +4646,106 @@ async function refreshDramaStatus(): Promise<void> {
   renderDramaStatus();
 }
 
+/** Every voice file the model should have: added by hand, and made in the Speaker Gallery. */
+function dramaVoiceSources(): DramaVoiceFile[] {
+  const fromGallery = speakerPersonas
+    .filter((p) => p.dramaVoicePath)
+    .map((p) => ({ name: p.dramaVoiceName || p.name, path: p.dramaVoicePath! }));
+  return [...dramaVoiceFiles, ...fromGallery];
+}
+
 function dramaVoiceNames(): string[] {
   const names = dramaStatus.modelLoaded && dramaStatus.modelInfo
     ? dramaStatus.modelInfo.voices.map((v) => v.name)
-    : ["none", ...dramaVoiceFiles.map((v) => v.name)];
+    : dramaVoiceSources().map((v) => v.name);
   return Array.from(new Set(["none", ...names]));
+}
+
+/** A voice name no other voice (in the model, saved, or in the gallery) has taken. */
+function uniqueDramaVoiceName(base: string, except?: SpeakerPersona): string {
+  const taken = new Set([
+    "none",
+    ...(dramaStatus.modelInfo?.voices.map((v) => v.name) || []),
+    ...dramaVoiceFiles.map((v) => v.name),
+    ...speakerPersonas.filter((p) => p !== except && p.dramaVoicePath).map((p) => p.dramaVoiceName || p.name),
+  ]);
+  const clean = base.trim() || "voice";
+  let name = clean;
+  for (let i = 2; taken.has(name); i++) name = `${clean}_${i}`;
+  return name;
+}
+
+function renderSpeakerDramaState(persona: SpeakerPersona): void {
+  const state = el<HTMLElement>("#speaker-drama-state");
+  const button = el<HTMLButtonElement>("#speaker-drama-make-btn");
+  const ready = Boolean(persona.dramaVoicePath);
+  const stale = ready && (persona.dramaVoiceText || "").trim() !== persona.refText.trim();
+  const making = dramaVoiceMaking === persona.id;
+  setText("#speaker-drama-state", making
+    ? t("Creating…")
+    : !ready ? t("Not created") : stale ? t("Transcript changed: recreate") : t("Ready"));
+  state.classList.toggle("ok", ready && !stale && !making);
+  state.classList.toggle("warn", stale && !making);
+  button.disabled = Boolean(dramaVoiceMaking);
+  button.textContent = making
+    ? t("Creating the voice, about 1–2 minutes…")
+    : ready ? t("Recreate Drama 3 voice") : t("Create Drama 3 voice");
+}
+
+let dramaVoiceMaking = "";
+
+/** Makes the persona's Drama 3 voice file (reference + transcript) and adds it to the loaded model. */
+async function makeDramaVoiceForPersona(persona: SpeakerPersona): Promise<void> {
+  if (dramaVoiceMaking) return;
+  const transcript = persona.refText.trim();
+  if (!persona.refPath) {
+    showToast(t("Add the reference audio first"), "warning");
+    return;
+  }
+  if (!transcript) {
+    showToast(t("Drama 3 needs the exact transcript of the reference: type it or use Auto-transcribe"), "warning");
+    return;
+  }
+  dramaVoiceMaking = persona.id;
+  renderSpeakerDramaState(persona);
+  try {
+    if (!dramaStatus.libraryLoaded) {
+      const { libraryPath } = dramaPathsFromInputs();
+      dramaStatus = await invoke<DramaStatus>("drama_load_library", { libraryPath: libraryPath || null });
+    }
+    const modelPath = dramaStatus.modelPath || dramaPathsFromInputs().modelPath;
+    const target = await invoke<{ path: string }>("speaker_drama_voice_path", {
+      speakerId: persona.id,
+      speakerName: persona.name,
+    });
+    // The model cannot drop a voice, so a recreated voice gets a fresh name if the old one is in it.
+    const name = uniqueDramaVoiceName(persona.name, persona);
+    if (!/[.!?…»"]$/.test(transcript)) {
+      showToast(t("The transcript does not end with a full stop: the reference should end at the end of a sentence"), "warning");
+    }
+    const result = await invoke<{ path: string }>("drama_voice_make", {
+      request: {
+        references: [{ path: persona.refPath, transcript }],
+        voices: [],
+        outPath: target.path,
+        modelPath: modelPath || null,
+      },
+      addAs: dramaStatus.modelLoaded ? name : null,
+    });
+    persona.dramaVoicePath = result.path;
+    persona.dramaVoiceName = name;
+    persona.dramaVoiceText = transcript;
+    persona.updatedAt = Date.now();
+    await refreshDramaStatus();
+    showToast(dramaStatus.modelLoaded
+      ? `${t("Drama 3 voice created and added")}: ${name}`
+      : `${t("Drama 3 voice created; it will be added when the model loads")}: ${name}`);
+  } catch (e) {
+    showToast(`${t("Could not create the Drama 3 voice")}: ${e}`, "error");
+  } finally {
+    dramaVoiceMaking = "";
+    saveSpeakerPersonas();
+  }
 }
 
 function renderDramaVoiceSelect(): void {
@@ -4681,7 +4787,7 @@ async function unloadDramaToFreeVram(): Promise<void> {
 /** Adds the saved voice files that the loaded model does not have yet. */
 async function addSavedDramaVoices(): Promise<void> {
   const have = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
-  for (const voice of dramaVoiceFiles) {
+  for (const voice of dramaVoiceSources()) {
     if (have.has(voice.name)) continue;
     try {
       await invoke("drama_voice_add", { name: voice.name, path: voice.path });
@@ -4765,10 +4871,7 @@ async function doAddDramaVoiceFile(): Promise<void> {
     selectDramaVoice(existing.name);
     return;
   }
-  const base = voiceNameFromPath(path);
-  const taken = new Set(["none", ...dramaVoiceNames(), ...dramaVoiceFiles.map((v) => v.name)]);
-  let name = base;
-  for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
+  const name = uniqueDramaVoiceName(voiceNameFromPath(path));
   if (dramaStatus.modelLoaded) {
     try {
       await invoke("drama_voice_add", { name, path });
