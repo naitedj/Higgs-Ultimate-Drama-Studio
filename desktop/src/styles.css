@@ -2425,3 +2425,5 @@ input[type="range"]::-moz-range-thumb {
 .chapter-piece-actions { display: flex; gap: 6px; }
 .chapter-piece-text { font-size: 13px; min-height: 0; }
 .chapter-piece-reason { color: #e0a33a; font-size: 12px; margin: 0; }
+.chapter-character-tools { margin-bottom: 8px; }
+.chapter-piece-speaker-select { border-color: var(--speaker-color); color: var(--speaker-color); font-size: 12px; font-weight: 700; max-width: 220px; min-height: 26px; padding: 2px 6px; }

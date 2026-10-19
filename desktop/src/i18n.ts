@@ -823,7 +823,7 @@ export const RU: Record<string, string> = {
   "takes": "дублей",
   "pieces": "кусков",
   "to check": "проверить",
-  "The text was changed: redo this piece": "Текст изменён — переделайте этот кусок",
+  "The text was changed: redo this piece": "Изменён текст или говорящий — переделайте этот кусок",
   "Paste the chapter text first": "Сначала вставьте текст главы",
   "Add characters in the Multi Speaker tab first, or turn off dialogue in the characters' voices":
     "Сначала добавьте персонажей во вкладке «Мультиспикер» или выключите «Диалоги голосами персонажей»",
@@ -842,6 +842,11 @@ export const RU: Record<string, string> = {
   "Chapter joined": "Глава склеена",
   "The voiced pieces will be dropped and the chapter cut again. Go on?": "Озвученные куски пропадут, глава разобьётся заново. Продолжить?",
   "Cut again": "Разбить заново",
+  // Chapter: speakers
+  "Characters and their voices: in the Multi Speaker tab →": "Персонажи и их голоса — во вкладке «Мультиспикер» →",
+  "Put the cursor in a line (or select several) and press a character, or Alt+its number: the line gets that speaker. A line can also start with “Name:”.":
+    "Поставьте курсор в строку (или выделите несколько) и нажмите персонажа или Alt+его номер — строка достанется ему. Строку можно начать и с «Имя:».",
+  "Narrator (chapter voice)": "Рассказчик (голос главы)",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

@@ -839,6 +839,15 @@
               <span id="chapter-status" class="api-status-text"></span>
             </div>
             <p class="input-hint">Paste a chapter: it is cut into pieces (paragraphs, long ones at sentence ends) that are voiced one after another and checked. A bad piece is redone with another seed automatically. Pieces are kept until the program is closed: save the joined chapter to a file.</p>
+            <div id="chapter-character-tools" class="chapter-character-tools hidden">
+              <div class="scene-script-tools">
+                <button id="chapter-markup-book" class="compact-button primary" type="button" title="Paste a book passage as it is, with dashes, and the program sets who says what">✨ Mark up book text</button>
+                <button id="chapter-markup-undo" class="compact-button hidden" type="button">↶ Undo markup</button>
+                <button id="chapter-goto-characters" class="link-button" type="button">Characters and their voices: in the Multi Speaker tab →</button>
+              </div>
+              <div id="chapter-speaker-bar" class="scene-speaker-bar"></div>
+              <p class="input-hint scene-speaker-hint">Put the cursor in a line (or select several) and press a character, or Alt+its number: the line gets that speaker. A line can also start with “Name:”.</p>
+            </div>
             <div class="drama-remarks" data-target="#chapter-text"></div>
             <textarea id="chapter-text" class="text-area" rows="10" placeholder="Paste the chapter text here…"></textarea>
             <div class="chapter-settings">
