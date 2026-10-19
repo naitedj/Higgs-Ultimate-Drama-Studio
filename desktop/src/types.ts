@@ -1,4 +1,4 @@
-export type Mode = "tts" | "clone" | "speakers" | "finish" | "multi" | "api" | "history" | "batch" | "transcript";
+export type Mode = "tts" | "clone" | "speakers" | "finish" | "multi" | "api" | "history" | "batch" | "transcript" | "montage";
 
 // Один сегмент результата диаризации/транскрипции (camelCase из Rust).
 export type TranscriptSegment = {

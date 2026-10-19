@@ -2333,3 +2333,27 @@ input[type="range"]::-moz-range-thumb {
 .audio-editor-controls, .audio-editor-pauses { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .audio-editor-pauses span { color: var(--text-secondary); font-size: 12px; }
 .audio-editor-pauses .number-input { width: 70px; }
+.montage-add-row, .montage-join-row, .montage-output-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.montage-add-row .select-input { flex: 1 1 260px; min-width: 0; }
+.montage-list { display: flex; flex-direction: column; gap: 6px; }
+.montage-row {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 22px auto minmax(140px, 1fr) 56px auto auto auto;
+  padding: 6px 8px;
+}
+.montage-index { color: var(--text-muted); font-size: 12px; font-weight: 700; text-align: center; }
+.montage-duration { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.montage-field { align-items: center; display: flex; gap: 5px; }
+.montage-field span { color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
+.montage-field .number-input { width: 64px; }
+.montage-actions { display: flex; gap: 4px; }
+.montage-actions .icon-button { min-width: 28px; }
+.montage-actions .icon-button.danger:hover { border-color: #ef4444; color: #ef4444; }
+.montage-speed-row { flex: 1 1 280px; }
+.montage-output { border: 1px solid var(--border); border-radius: 4px; margin-top: 12px; padding: 12px; }
+.montage-output audio { width: 100%; }
+.recent-montage { flex: 0 0 auto; font-size: 11px; min-height: 24px; padding: 2px 8px; }

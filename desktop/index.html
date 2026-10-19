@@ -189,6 +189,7 @@
             <button class="mode-tab" data-mode="batch" role="tab" aria-selected="false">Batch</button>
             <button class="mode-tab" data-mode="transcript" role="tab" aria-selected="false">Transcript &amp; Diarization</button>
             <button class="mode-tab" data-mode="history" role="tab" aria-selected="false">History</button>
+            <button class="mode-tab" data-mode="montage" role="tab" aria-selected="false">Montage</button>
           </div>
 
           <!-- ═══ TTS mode ═══ -->
@@ -446,6 +447,7 @@
               <section id="scene-results" class="workflow-section hidden">
                 <div class="section-head">
                   <h3>Lines</h3>
+                  <button id="scene-lines-to-montage" class="compact-button" type="button">All lines → montage</button>
                 </div>
                 <div id="scene-results-list" class="scene-results-list"></div>
               </section>
@@ -809,6 +811,47 @@
             </div>
           </div>
 
+          <!-- ═══ Montage: join fragments into one track ═══ -->
+          <div class="mode-content hidden" id="mode-montage">
+            <div class="history-head">
+              <h3>Montage</h3>
+              <button id="montage-clear" class="compact-button danger hidden" type="button">Clear</button>
+            </div>
+            <p class="input-hint">Collect fragments from History, the last result, scene lines or files, put them in order and join them into one track. Fragments are kept until the program is closed: save the joined track to a file.</p>
+            <div class="montage-add-row">
+              <button id="montage-add-result" class="compact-button" type="button">+ Last result</button>
+              <select id="montage-history-select" class="select-input"></select>
+              <button id="montage-add-history" class="compact-button" type="button">+ From history</button>
+              <button id="montage-add-file" class="compact-button" type="button">+ File…</button>
+            </div>
+            <div id="montage-list" class="montage-list"></div>
+            <div class="montage-join-row">
+              <label class="inline-toggle">
+                <span>Even out loudness</span>
+                <span class="toggle-switch"><input type="checkbox" id="montage-normalize" checked /><span class="toggle-slider"></span></span>
+              </label>
+              <label class="slider-label montage-speed-row">
+                <span class="slider-name">Speed of the whole track</span>
+                <input type="range" id="montage-speed" min="0.5" max="2" step="0.05" value="1" />
+                <span class="slider-value" id="montage-val-speed">1.00×</span>
+              </label>
+              <button id="montage-join" class="primary-btn" type="button">⧉ Join</button>
+            </div>
+            <div id="montage-output" class="montage-output hidden">
+              <div class="output-head">
+                <h3>Joined track</h3>
+                <span id="montage-output-info" class="api-status-text"></span>
+              </div>
+              <audio id="montage-audio" controls preload="auto"></audio>
+              <div class="montage-output-actions">
+                <button id="montage-edit" class="compact-button" type="button">✂ Edit</button>
+                <button id="montage-save-wav" class="compact-button primary" type="button">Save WAV</button>
+                <button id="montage-save-mp3" class="compact-button" type="button">Save MP3</button>
+                <button id="montage-to-history" class="compact-button" type="button">To history</button>
+              </div>
+            </div>
+          </div>
+
           <!-- ═══ Batch mode ═══ -->
           <div class="mode-content hidden" id="mode-batch">
             <div class="history-head">
@@ -914,6 +957,7 @@ Third phrase."></textarea>
             <div class="output-head">
               <h3>Output</h3>
               <button id="output-edit-btn" class="compact-button output-edit-button" type="button" title="Cut pauses and pieces out of the result">✂ Edit</button>
+              <button id="output-to-montage-btn" class="compact-button" type="button" title="Add the result to the Montage tab">+ To montage</button>
               <div class="save-menu">
                 <button id="download-output-btn" class="compact-button icon-save-button" type="button" aria-label="Save audio" title="Save audio">
                   <svg class="download-save-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" aria-hidden="true">
@@ -1194,6 +1238,12 @@ Third phrase."></textarea>
               <input id="audio-editor-keep" type="number" min="0" max="5" step="0.05" class="number-input" />
               <span>s</span>
               <button id="audio-editor-shorten" class="compact-button" type="button">Shorten all long pauses</button>
+            </div>
+            <div class="audio-editor-pauses">
+              <span>Speed</span>
+              <input id="audio-editor-speed" type="number" min="0.5" max="2" step="0.05" value="1.1" class="number-input" />
+              <span>× (the voice keeps its pitch)</span>
+              <button id="audio-editor-apply-speed" class="compact-button" type="button">Apply speed</button>
             </div>
           </div>
           <div class="modal-actions">

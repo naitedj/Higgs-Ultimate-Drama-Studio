@@ -42,7 +42,17 @@ import {
   parseWavPcm,
 } from "./audio";
 import { buildApiExample as buildApiExampleSnippet } from "./apiExamples";
-import { loadPauseTrimSettings, savePauseTrimSettings, shortenResultPauses } from "./audioEdit";
+import {
+  convertChannels,
+  loadPauseTrimSettings,
+  pcmToResult,
+  resamplePcm,
+  savePauseTrimSettings,
+  shortenResultPauses,
+  SPEED_MAX,
+  SPEED_MIN,
+  timeStretch,
+} from "./audioEdit";
 import type { PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import {
@@ -1434,8 +1444,9 @@ function switchMode(mode: Mode): void {
     content.classList.toggle("hidden", content.id !== `mode-${mode}`);
   }
   // Hide generation UI in utility views.
-  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript";
+  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage";
   if (mode === "batch") refreshBatchPersonaOptions();
+  if (mode === "montage") renderMontageHistorySelect();
   if (mode === "transcript") void refreshTranscriptModelNote();
   if (mode === "transcript" || mode === "clone") void refreshVoiceCleanNote();
   el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility || activeEngine === "drama");
@@ -5908,8 +5919,7 @@ function buildBatchJob(text: string, persona: SpeakerPersona | undefined): Gener
   };
 }
 
-async function saveResultToFile(result: GenerationResult, defaultName: string): Promise<void> {
-  const format = selectedSaveFormat;
+async function saveResultToFile(result: GenerationResult, defaultName: string, format: SaveFormat = selectedSaveFormat): Promise<void> {
   try {
     const path = await save({
       defaultPath: `${defaultName}.${format}`,
@@ -7129,7 +7139,7 @@ function addHistory(mode: Mode, label: string, result: GenerationResult): void {
     channels: result.channels,
   };
   history.unshift(entry);
-  if (history.length > 10) history.length = 10; // keep last 10
+  if (history.length > 30) history.length = 30; // keep last 30 (fragments for Montage)
   renderHistory();
 }
 
@@ -7146,7 +7156,11 @@ function renderHistory(): void {
     const item = document.createElement("div");
     item.className = "recent-item";
     const time = new Date(entry.timestamp).toLocaleTimeString();
-    item.innerHTML = `<span class="recent-mode">${entry.mode}</span><span class="recent-label">${entry.label}</span><span class="recent-time">${time}</span><button class="recent-delete" data-id="${entry.id}" title="Delete">✕</button>`;
+    item.innerHTML = `<span class="recent-mode">${entry.mode}</span><span class="recent-label">${escapeHtml(entry.label)}</span><span class="recent-time">${time}</span><button class="recent-montage compact-button" data-id="${entry.id}" type="button" title="${escapeHtml(t("Add to the Montage tab"))}">${escapeHtml(t("+ To montage"))}</button><button class="recent-delete" data-id="${entry.id}" title="Delete">✕</button>`;
+    item.querySelector<HTMLButtonElement>(".recent-montage")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      addMontageClip(entry.label, historyEntryResult(entry), "history");
+    });
 
     // Click on the item (not the delete button) plays it
     item.addEventListener("click", (e) => {
@@ -7179,6 +7193,321 @@ function renderHistory(): void {
       renderHistory();
     });
   }
+  renderMontageHistorySelect();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Montage: fragments from History, results, scene lines or files, put in order
+// and joined into one track, each with its own speed and pause after it.
+// Kept in memory for the session; the joined track is saved to a file.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type MontageClip = {
+  id: string;
+  label: string;
+  result: GenerationResult;
+  /** 1 = as recorded; the voice keeps its pitch. */
+  speed: number;
+  /** Silence after this fragment, in seconds. */
+  pauseAfter: number;
+};
+
+const MONTAGE_NORMALIZE_STORAGE_KEY = "dramaStudio.montageNormalize";
+let montageClips: MontageClip[] = [];
+let montageResult: GenerationResult | null = null;
+let montageAudioUrl = "";
+const montageClipPlayer = new Audio();
+let montageClipPlayerUrl = "";
+let montagePlayingId = "";
+let montageJoining = false;
+
+function historyEntryResult(entry: HistoryEntry): GenerationResult {
+  const pcm = parseWavPcm(entry.wavBase64);
+  return { sampleRate: pcm.sampleRate, channels: pcm.channels, sampleCount: pcm.samples.length, wavBase64: entry.wavBase64 };
+}
+
+function resultSeconds(result: GenerationResult): number {
+  const pcm = parseWavPcm(result.wavBase64);
+  return pcm.samples.length / pcm.channels / pcm.sampleRate;
+}
+
+function addMontageClip(label: string, result: GenerationResult, _source: string, silent = false): void {
+  montageClips.push({
+    id: nextId("clip"),
+    label: label.trim() || t("Fragment"),
+    result,
+    speed: 1,
+    pauseAfter: 0.4,
+  });
+  renderMontage();
+  if (!silent) showToast(`${t("Added to montage")}: ${label.trim().slice(0, 40) || t("Fragment")}`);
+}
+
+function renderMontageHistorySelect(): void {
+  const select = document.querySelector<HTMLSelectElement>("#montage-history-select");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = history.length === 0
+    ? `<option value="">${escapeHtml(t("History is empty"))}</option>`
+    : history
+      .map((entry) => `<option value="${entry.id}">${escapeHtml(new Date(entry.timestamp).toLocaleTimeString())} · ${escapeHtml(entry.label.slice(0, 60))}</option>`)
+      .join("");
+  if (history.some((h) => h.id === current)) select.value = current;
+  el<HTMLButtonElement>("#montage-add-history").disabled = history.length === 0;
+}
+
+function renderMontage(): void {
+  const list = el<HTMLElement>("#montage-list");
+  list.innerHTML = "";
+  if (montageClips.length === 0) {
+    list.innerHTML = `<p class="empty-state">${escapeHtml(t("No fragments yet: add them with the buttons above or “+ To montage” in History and under a result."))}</p>`;
+  }
+  montageClips.forEach((clip, index) => {
+    const row = document.createElement("div");
+    row.className = "montage-row";
+    row.dataset.id = clip.id;
+    const seconds = resultSeconds(clip.result) / clip.speed;
+    row.innerHTML = `
+      <span class="montage-index">${index + 1}</span>
+      <button class="ref-play" data-action="play" type="button" aria-label="${escapeHtml(t("Play"))}">${montagePlayingId === clip.id ? "⏸" : "▶"}</button>
+      <input class="text-input montage-label" data-field="label" type="text" />
+      <span class="montage-duration">${seconds.toFixed(1)} ${escapeHtml(t("s"))}</span>
+      <label class="montage-field" title="${escapeHtml(t("Speed: above 1 faster, below 1 slower; the voice keeps its pitch"))}">
+        <span>${escapeHtml(t("Speed"))}</span>
+        <input class="number-input" data-field="speed" type="number" min="0.5" max="2" step="0.05" />
+      </label>
+      <label class="montage-field" title="${escapeHtml(t("Silence after this fragment"))}">
+        <span>${escapeHtml(t("Pause after"))}</span>
+        <input class="number-input" data-field="pause" type="number" min="0" max="10" step="0.05" />
+      </label>
+      <span class="montage-actions">
+        <button class="icon-button" data-action="edit" type="button" title="${escapeHtml(t("Cut pauses and pieces out of this fragment"))}">✂</button>
+        <button class="icon-button" data-action="up" type="button" title="${escapeHtml(t("Move up"))}" ${index === 0 ? "disabled" : ""}>↑</button>
+        <button class="icon-button" data-action="down" type="button" title="${escapeHtml(t("Move down"))}" ${index === montageClips.length - 1 ? "disabled" : ""}>↓</button>
+        <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
+      </span>
+    `;
+    row.querySelector<HTMLInputElement>('[data-field="label"]')!.value = clip.label;
+    row.querySelector<HTMLInputElement>('[data-field="speed"]')!.value = String(clip.speed);
+    row.querySelector<HTMLInputElement>('[data-field="pause"]')!.value = String(clip.pauseAfter);
+    list.appendChild(row);
+  });
+  el("#montage-clear").classList.toggle("hidden", montageClips.length === 0);
+  el<HTMLButtonElement>("#montage-join").disabled = montageClips.length === 0 || montageJoining;
+}
+
+/** A fragment's audio at the montage's rate and channels, with its speed applied. */
+function montageClipPcm(clip: MontageClip, rate: number, channels: number): WavPcm {
+  let pcm = parseWavPcm(clip.result.wavBase64);
+  pcm = convertChannels(resamplePcm(pcm, rate), channels);
+  return timeStretch(pcm, clip.speed);
+}
+
+async function playMontageClip(clip: MontageClip): Promise<void> {
+  montageClipPlayer.pause();
+  if (montagePlayingId === clip.id) {
+    montagePlayingId = "";
+    renderMontage();
+    return;
+  }
+  const pcm = parseWavPcm(clip.result.wavBase64);
+  const audio = clip.speed === 1 ? clip.result : pcmToResult(timeStretch(pcm, clip.speed));
+  if (montageClipPlayerUrl) URL.revokeObjectURL(montageClipPlayerUrl);
+  montageClipPlayerUrl = URL.createObjectURL(await base64ToBlobAsync(audio.wavBase64, "audio/wav"));
+  montageClipPlayer.src = montageClipPlayerUrl;
+  montageClipPlayer.volume = audioPlayer.volume;
+  montagePlayingId = clip.id;
+  montageClipPlayer.onended = () => {
+    montagePlayingId = "";
+    renderMontage();
+  };
+  renderMontage();
+  await montageClipPlayer.play().catch(() => {
+    montagePlayingId = "";
+    renderMontage();
+  });
+}
+
+function showMontageResult(result: GenerationResult): void {
+  montageResult = result;
+  const audio = el<HTMLAudioElement>("#montage-audio");
+  void base64ToBlobAsync(result.wavBase64, "audio/wav").then((blob) => {
+    if (montageAudioUrl) URL.revokeObjectURL(montageAudioUrl);
+    montageAudioUrl = URL.createObjectURL(blob);
+    audio.src = montageAudioUrl;
+    audio.load();
+  });
+  const seconds = resultSeconds(result);
+  el("#montage-output-info").textContent = `${formatTime(seconds)} · ${result.sampleRate} ${t("Hz")}`;
+  el("#montage-output").classList.remove("hidden");
+}
+
+async function joinMontage(): Promise<void> {
+  if (montageClips.length === 0 || montageJoining) return;
+  montageJoining = true;
+  const button = el<HTMLButtonElement>("#montage-join");
+  button.disabled = true;
+  button.textContent = t("Joining…");
+  try {
+    // Let the button repaint before the work.
+    await nextFrame();
+    const normalize = el<HTMLInputElement>("#montage-normalize").checked;
+    const decoded = montageClips.map((clip) => parseWavPcm(clip.result.wavBase64));
+    const rate = Math.max(...decoded.map((p) => p.sampleRate));
+    const channels = Math.max(...decoded.map((p) => p.channels));
+    const pieces: WavPcm[] = [];
+    for (const clip of montageClips) {
+      let source = clip;
+      if (normalize) {
+        // Same loudness for every fragment (EBU R128, −20 LUFS), as Multi Speaker does.
+        const leveled = await normalizeResultLoudness(clip.result);
+        source = { ...clip, result: leveled };
+      }
+      pieces.push(montageClipPcm(source, rate, channels));
+    }
+    const pauses = montageClips.map((clip, i) => (i < montageClips.length - 1 ? Math.round(clip.pauseAfter * rate) : 0));
+    const total = pieces.reduce((sum, p, i) => sum + p.samples.length + pauses[i] * channels, 0);
+    const samples = new Int16Array(total);
+    let offset = 0;
+    pieces.forEach((piece, i) => {
+      samples.set(piece.samples, offset);
+      offset += piece.samples.length + pauses[i] * channels;
+    });
+    let joined: WavPcm = { sampleRate: rate, channels, samples };
+    const speed = parseFloat(el<HTMLInputElement>("#montage-speed").value) || 1;
+    joined = timeStretch(joined, speed);
+    showMontageResult(pcmToResult(joined));
+    showToast(`${t("Joined")}: ${montageClips.length} ${t("fragments")}`);
+  } catch (e) {
+    showToast(`${t("Could not join")}: ${e}`, "error");
+  } finally {
+    montageJoining = false;
+    button.textContent = t("⧉ Join");
+    renderMontage();
+  }
+}
+
+async function addMontageFiles(): Promise<void> {
+  const selected = await open({
+    multiple: true,
+    filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "ogg", "aac", "opus"] }],
+  });
+  const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+  for (const path of paths) {
+    try {
+      const result = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: path });
+      addMontageClip(path.split(/[/\\]/).pop() || path, result, "file", true);
+    } catch (e) {
+      showToast(`${t("Could not read the recording")}: ${e}`, "error");
+    }
+  }
+  if (paths.length > 0) showToast(`${t("Added to montage")}: ${paths.length}`);
+}
+
+function initMontage(): void {
+  try {
+    el<HTMLInputElement>("#montage-normalize").checked = localStorage.getItem(MONTAGE_NORMALIZE_STORAGE_KEY) !== "false";
+  } catch {
+    // Default stays on.
+  }
+  el("#montage-normalize").addEventListener("change", (event) => {
+    localStorage.setItem(MONTAGE_NORMALIZE_STORAGE_KEY, String((event.target as HTMLInputElement).checked));
+  });
+  el<HTMLInputElement>("#montage-speed").addEventListener("input", (event) => {
+    el("#montage-val-speed").textContent = `${parseFloat((event.target as HTMLInputElement).value).toFixed(2)}×`;
+  });
+  el("#montage-add-result").addEventListener("click", () => {
+    if (!lastResult) {
+      showToast(t("No result yet"), "warning");
+      return;
+    }
+    addMontageClip(history[0]?.label || t("Result"), lastResult, "result");
+  });
+  el("#montage-add-history").addEventListener("click", () => {
+    const id = el<HTMLSelectElement>("#montage-history-select").value;
+    const entry = history.find((h) => h.id === id);
+    if (entry) addMontageClip(entry.label, historyEntryResult(entry), "history");
+  });
+  el("#montage-add-file").addEventListener("click", () => void addMontageFiles());
+  el("#montage-clear").addEventListener("click", () => {
+    montageClips = [];
+    montageClipPlayer.pause();
+    montagePlayingId = "";
+    renderMontage();
+  });
+  el("#montage-join").addEventListener("click", () => void joinMontage());
+
+  const list = el<HTMLElement>("#montage-list");
+  list.addEventListener("change", (event) => {
+    const input = event.target as HTMLInputElement;
+    const clip = montageClips.find((c) => c.id === input.closest<HTMLElement>(".montage-row")?.dataset.id);
+    if (!clip) return;
+    if (input.dataset.field === "label") clip.label = input.value;
+    if (input.dataset.field === "speed") {
+      clip.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, parseFloat(input.value) || 1));
+      renderMontage();
+    }
+    if (input.dataset.field === "pause") clip.pauseAfter = Math.min(10, Math.max(0, parseFloat(input.value) || 0));
+  });
+  list.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!button) return;
+    const index = montageClips.findIndex((c) => c.id === button.closest<HTMLElement>(".montage-row")?.dataset.id);
+    const clip = montageClips[index];
+    if (!clip) return;
+    const action = button.dataset.action;
+    if (action === "play") {
+      void playMontageClip(clip);
+    } else if (action === "edit") {
+      editAudio(clip.label, clip.result.wavBase64, (edited) => {
+        clip.result = edited;
+        renderMontage();
+      });
+    } else if (action === "remove") {
+      montageClips.splice(index, 1);
+      renderMontage();
+    } else {
+      const target = action === "up" ? index - 1 : index + 1;
+      if (target < 0 || target >= montageClips.length) return;
+      [montageClips[index], montageClips[target]] = [montageClips[target], montageClips[index]];
+      renderMontage();
+    }
+  });
+
+  el("#montage-edit").addEventListener("click", () => {
+    if (!montageResult) return;
+    editAudio(t("Joined track"), montageResult.wavBase64, (edited) => showMontageResult(edited));
+  });
+  el("#montage-save-wav").addEventListener("click", () => {
+    if (montageResult) void saveResultToFile(montageResult, "montage", "wav");
+  });
+  el("#montage-save-mp3").addEventListener("click", () => {
+    if (montageResult) void saveResultToFile(montageResult, "montage", "mp3");
+  });
+  el("#montage-to-history").addEventListener("click", () => {
+    if (!montageResult) return;
+    addHistory("montage", `${t("Montage")}: ${montageClips.map((c) => c.label).join(" + ").slice(0, 60)}`, montageResult);
+    showToast(t("Added to history"));
+  });
+
+  el("#output-to-montage-btn").addEventListener("click", () => {
+    if (!lastResult) return;
+    const label = history[0]?.label || modeLabel(isGenerationMode(currentMode) ? currentMode : "tts");
+    addMontageClip(label, lastResult, "result");
+  });
+  el("#scene-lines-to-montage").addEventListener("click", () => {
+    if (sceneLines.length === 0) return;
+    sceneLines.forEach((line, i) => {
+      const name = sceneLinesCharacters[line.reply.character]?.name || "";
+      const clip = { label: `${i + 1}. ${name}: ${line.reply.text}`.slice(0, 80), result: line.result };
+      addMontageClip(clip.label, clip.result, "scene", true);
+      montageClips[montageClips.length - 1].pauseAfter = sceneLinesPause;
+    });
+    renderMontage();
+    showToast(`${t("Added to montage")}: ${sceneLines.length}`);
+  });
+  renderMontage();
+  renderMontageHistorySelect();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7837,6 +8166,14 @@ async function main(): Promise<void> {
   initAdvancedOptions();
   initDramaEngine();
   initAudioEditing();
+  initMontage();
+  // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
+  if (import.meta.env.DEV) {
+    (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
+      addMontageClip,
+      montageResult: () => montageResult,
+    };
+  }
   initGenerate();
   initAudioPlayer();
   initBatchTab();

@@ -13,6 +13,9 @@ import {
   pcmToResult,
   removeRanges,
   shortenPauses,
+  SPEED_MAX,
+  SPEED_MIN,
+  timeStretch,
 } from "./audioEdit";
 import type { FrameRange, PauseTrimSettings } from "./audioEdit";
 import { cssVar, el, formatTime } from "./dom";
@@ -297,6 +300,20 @@ function shortenAll(): void {
   toast(`${t("Pauses shortened")}: ${result.count} (−${result.seconds.toFixed(1)} ${t("s")})`);
 }
 
+function applySpeed(): void {
+  if (!state) return;
+  const speed = parseFloat(el<HTMLInputElement>("#audio-editor-speed").value);
+  if (!Number.isFinite(speed) || speed < SPEED_MIN || speed > SPEED_MAX) {
+    toast(`${t("Speed from")} ${SPEED_MIN} ${t("to")} ${SPEED_MAX}`, "warning");
+    return;
+  }
+  if (Math.abs(speed - 1) < 0.005) return;
+  state.selection = null;
+  state.cursor = 0;
+  apply(timeStretch(state.pcm, speed));
+  toast(`${t("Speed applied")}: ${speed.toFixed(2)}×`);
+}
+
 function undo(): void {
   if (!state || state.undo.length === 0) return;
   stopPlayback();
@@ -419,6 +436,7 @@ export function initAudioEditor(showToast: typeof toast): void {
   el("#audio-editor-crop").addEventListener("click", cropSelection);
   el("#audio-editor-undo").addEventListener("click", undo);
   el("#audio-editor-shorten").addEventListener("click", shortenAll);
+  el("#audio-editor-apply-speed").addEventListener("click", applySpeed);
   el("#audio-editor-save").addEventListener("click", () => void save());
   el("#audio-editor-cancel").addEventListener("click", close);
   el("#audio-editor-close").addEventListener("click", close);
