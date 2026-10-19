@@ -771,3 +771,10 @@ export function charsPerSecond(text: string, seconds: number): number {
   const speakable = spokenTextOnly(text).replace(/\s+/g, " ").trim().length;
   return seconds > 0 ? speakable / seconds : 0;
 }
+
+/** The speaker a line names with "Name:" or "N:" (a character index), and the text without it; -1 when none. */
+export function speakerOfLine(line: string, characters: DramaCharacter[]): { character: number; text: string } {
+  const prefix = splitNamePrefix(line);
+  const index = prefix ? characterIndexForPrefix(prefix.name, characters) : -1;
+  return index >= 0 && prefix ? { character: index, text: prefix.text.trim() } : { character: -1, text: line.trim() };
+}

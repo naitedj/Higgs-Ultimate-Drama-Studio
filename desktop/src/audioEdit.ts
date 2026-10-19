@@ -355,3 +355,16 @@ export function shiftPitchAndTempo(pcm: WavPcm, semitones: number, tempo: number
   if (Math.abs(ratio - 1) < 0.001) return stretched;
   return resamplePcm({ ...stretched, sampleRate: Math.round(pcm.sampleRate * ratio) }, pcm.sampleRate);
 }
+
+/** Silence at the very start and end cut to `head` / `tail` seconds (speech is left whole). */
+export function trimEdgeSilence(pcm: WavPcm, head = 0.05, tail = 0.1): WavPcm {
+  const frames = frameCount(pcm);
+  const pauses = findPauses(pcm, 0.02);
+  const cuts: FrameRange[] = [];
+  const first = pauses[0];
+  if (first && first.start === 0) cuts.push({ start: 0, end: Math.max(0, first.end - Math.round(head * pcm.sampleRate)) });
+  const last = pauses[pauses.length - 1];
+  if (last && last.end >= frames && last.start > 0) cuts.push({ start: Math.min(frames, last.start + Math.round(tail * pcm.sampleRate)), end: frames });
+  const real = cuts.filter((c) => c.end > c.start);
+  return real.length > 0 ? removeRanges(pcm, real) : pcm;
+}

@@ -45,6 +45,8 @@ import { buildApiExample as buildApiExampleSnippet } from "./apiExamples";
 import {
   convertChannels,
   shiftPitchAndTempo,
+  trimEdgeSilence,
+  frameCount,
   loadPauseTrimSettings,
   pcmToResult,
   resamplePcm,
@@ -56,6 +58,8 @@ import {
 } from "./audioEdit";
 import type { PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
+import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
+import type { SubtitleCue } from "./subtitles";
 import { applyDictionary, DICTIONARY_STORAGE_KEY, loadDictionary, saveDictionary } from "./dictionary";
 import { AUDIOBOOK_TARGET_LUFS, audiobookFileName, id3Tag, loadAudiobookExport, masterAudiobook, saveAudiobookExport } from "./audiobook";
 import type { AudiobookExport, AudiobookFormat } from "./audiobook";
@@ -79,6 +83,7 @@ import {
   saveDramaScene,
   sceneNameCandidates,
   splitChapter,
+  speakerOfLine,
   comparableWords,
   wordCoverage,
   charsPerSecond,
@@ -1462,11 +1467,12 @@ function switchMode(mode: Mode): void {
     content.classList.toggle("hidden", content.id !== `mode-${mode}`);
   }
   // Hide generation UI in utility views.
-  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio";
+  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio" || mode === "subtitles";
   if (mode === "batch") refreshBatchPersonaOptions();
   if (mode === "montage") renderMontageHistorySelect();
   if (mode === "chapter") refreshChapterVoiceOptions();
   if (mode === "voicestudio") renderStudioSources();
+  if (mode === "subtitles") refreshSubsVoiceOptions();
   if (mode === "transcript") void refreshTranscriptModelNote();
   if (mode === "transcript" || mode === "clone") void refreshVoiceCleanNote();
   el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility || activeEngine === "drama");
@@ -4697,7 +4703,7 @@ function applyEngineKind(kind: EngineKind): void {
   for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
     if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
   }
-  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio";
+  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio" || currentMode === "subtitles";
   switchMode(unavailable ? "tts" : currentMode);
   if (drama) renderDramaChips();
   else void refreshHiggsChips();
@@ -5283,6 +5289,7 @@ function renderDramaVoiceSelect(): void {
   select.value = Array.from(select.options).some((o) => o.value === current) ? current : "none";
   el<HTMLButtonElement>("#drama-voice-remove-btn").disabled = !dramaVoiceFiles.some((v) => v.name === select.value);
   refreshChapterVoiceOptions();
+  refreshSubsVoiceOptions();
   // The Multi Speaker characters choose from the same voices.
   refreshSceneVoiceOptions();
 }
@@ -8933,6 +8940,446 @@ function initVoiceStudio(): void {
 // Audiobook export: loudness to the audiobook standard, room tone, MP3 with tags.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Subtitles: SRT/VTT lines voiced, trimmed and fitted into their times (sped up
+// a little when too long), then placed at their times in one track.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type SubsStatus = "waiting" | "generating" | "ok" | "fast" | "long" | "bad";
+type SubsCue = SubtitleCue & {
+  id: string;
+  /** Scene character, or -1 for the default voice. */
+  character: number;
+  status: SubsStatus;
+  reason: string;
+  /** The take, trimmed, before fitting. */
+  take: DramaGenerationResult | null;
+  speed: number;
+  stale: boolean;
+};
+type SubsSettings = { text: string; voice: string; useCharacters: boolean; maxSpeed: number; retries: number; level: boolean };
+
+const SUBS_STORAGE_KEY = "dramaStudio.subtitles";
+let subsCues: SubsCue[] = [];
+let subsCharacters: DramaCharacter[] = [];
+let subsRunning = false;
+let subsStopRequested = false;
+let subsTrack: GenerationResult | null = null;
+let subsTrackUrl = "";
+const subsPlayer = new Audio();
+let subsPlayerUrl = "";
+let subsPlayingId = "";
+
+function readSubsSettings(): SubsSettings {
+  const num = (id: string, min: number, max: number, fallback: number) => {
+    const v = parseFloat(el<HTMLInputElement>(id).value);
+    return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+  };
+  return {
+    text: el<HTMLTextAreaElement>("#subs-text").value,
+    voice: el<HTMLSelectElement>("#subs-voice").value || "none",
+    useCharacters: el<HTMLInputElement>("#subs-use-characters").checked,
+    maxSpeed: num("#subs-max-speed", 1, 1.6, 1.35),
+    retries: Math.round(num("#subs-retries", 0, 5, 1)),
+    level: el<HTMLInputElement>("#subs-level").checked,
+  };
+}
+
+function saveSubsSettings(): void {
+  try {
+    localStorage.setItem(SUBS_STORAGE_KEY, JSON.stringify(readSubsSettings()));
+  } catch {
+    // Long subtitles may not fit: a convenience only.
+  }
+  scheduleProjectSave();
+}
+
+function loadSubsSettings(from?: Partial<SubsSettings>): void {
+  let saved: Partial<SubsSettings> = from ?? {};
+  if (!from) {
+    try {
+      saved = JSON.parse(localStorage.getItem(SUBS_STORAGE_KEY) || "{}") || {};
+    } catch {
+      saved = {};
+    }
+  }
+  if (typeof saved.text === "string") el<HTMLTextAreaElement>("#subs-text").value = saved.text;
+  if (typeof saved.useCharacters === "boolean") el<HTMLInputElement>("#subs-use-characters").checked = saved.useCharacters;
+  if (typeof saved.level === "boolean") el<HTMLInputElement>("#subs-level").checked = saved.level;
+  if (typeof saved.maxSpeed === "number") el<HTMLInputElement>("#subs-max-speed").value = String(saved.maxSpeed);
+  if (typeof saved.retries === "number") el<HTMLInputElement>("#subs-retries").value = String(saved.retries);
+  if (typeof saved.voice === "string") {
+    const select = el<HTMLSelectElement>("#subs-voice");
+    select.dataset.saved = saved.voice;
+    select.value = "";
+    refreshSubsVoiceOptions();
+  }
+}
+
+function refreshSubsVoiceOptions(): void {
+  const select = document.querySelector<HTMLSelectElement>("#subs-voice");
+  if (!select) return;
+  const current = select.value || select.dataset.saved || "none";
+  const names = dramaVoiceNames().filter((n) => !isHiddenVoice(n));
+  if (!names.includes(current)) names.push(current);
+  select.innerHTML = names
+    .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n === "none" ? t("none (the model chooses)") : n)}</option>`)
+    .join("");
+  select.value = current;
+}
+
+/** How long a line may last: until the next line starts, or 1.5 s past its own end. */
+function subsSlot(index: number): number {
+  const cue = subsCues[index];
+  const next = subsCues[index + 1];
+  const limit = next ? next.start - 0.05 : cue.end + 1.5;
+  return Math.max(0.3, limit - cue.start);
+}
+
+/** A take fitted into `slot` seconds: as it is, sped up to `maxSpeed`, or still too long. */
+function fitSubsTake(take: GenerationResult, slot: number, maxSpeed: number): { pcm: WavPcm; speed: number; status: "ok" | "fast" | "long"; overflow: number } {
+  const pcm = parseWavPcm(take.wavBase64);
+  const seconds = frameCount(pcm) / pcm.sampleRate;
+  if (seconds <= slot) return { pcm, speed: 1, status: "ok", overflow: 0 };
+  const needed = seconds / slot;
+  const speed = Math.min(needed, maxSpeed);
+  const fitted = timeStretch(pcm, speed);
+  const overflow = needed > maxSpeed ? seconds / maxSpeed - slot : 0;
+  return { pcm: fitted, speed, status: needed > maxSpeed ? "long" : "fast", overflow };
+}
+
+function subsCueRequest(cue: SubsCue): { text: string; voice: string } {
+  const loaded = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+  if (cue.character >= 0) {
+    const snapshot = subsCharacters[cue.character];
+    const character = dramaScene.characters.find((c) => c.id === snapshot?.id) ?? snapshot;
+    const voice = character && character.voice !== "none" && loaded.has(character.voice) ? character.voice : "none";
+    if (character && character.voice !== "none" && voice === "none") throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
+    return { text: `${characterLineHint(character)}${cue.text}`, voice };
+  }
+  const voice = readSubsSettings().voice;
+  if (voice !== "none" && !loaded.has(voice)) throw new Error(`${t("Voice not found")}: ${voice}`);
+  return { text: cue.text, voice };
+}
+
+const SUBS_STATUS_LABEL: Record<SubsStatus, string> = {
+  waiting: "Waiting",
+  generating: "Generating…",
+  ok: "Fits",
+  fast: "Sped up",
+  long: "Does not fit",
+  bad: "Bad",
+};
+
+function renderSubsCues(): void {
+  scheduleProjectSave();
+  const list = el<HTMLElement>("#subs-cues");
+  list.innerHTML = "";
+  subsCues.forEach((cue, index) => {
+    const row = document.createElement("div");
+    const tone = cue.status === "ok" ? "ok" : cue.status === "fast" ? "warn ok-fast" : cue.status === "long" || cue.status === "bad" ? "bad" : cue.status;
+    row.className = `chapter-piece ${tone}${cue.stale ? " stale" : ""}`;
+    row.dataset.id = cue.id;
+    const meta: string[] = [`${formatTimestamp(cue.start)}–${formatTimestamp(cue.end)}`, `${t("slot")} ${subsSlot(index).toFixed(1)} ${t("s")}`];
+    if (cue.take) meta.push(`${t("take")} ${cue.take.seconds.toFixed(1)} ${t("s")}`);
+    if (cue.speed > 1.001) meta.push(`×${cue.speed.toFixed(2)}`);
+    const narratorLabel = t("Default voice");
+    const speakerSelect = subsCharacters.length > 0
+      ? `<select class="select-input chapter-piece-speaker-select" data-field="speaker" style="--speaker-color:${cue.character >= 0 ? sceneColor(cue.character) : "var(--text-secondary)"}">
+          <option value="-1">${escapeHtml(narratorLabel)}</option>
+          ${subsCharacters.map((c, i) => `<option value="${i}"${i === cue.character ? " selected" : ""}>${i}. ${escapeHtml(c.name)}</option>`).join("")}
+        </select>`
+      : "";
+    row.innerHTML = `
+      <div class="chapter-piece-head">
+        <span class="chapter-piece-index">${index + 1}</span>
+        <span class="chapter-piece-status">${escapeHtml(t(SUBS_STATUS_LABEL[cue.status]))}</span>
+        ${speakerSelect}
+        <span class="chapter-piece-meta">${escapeHtml(meta.join(" · "))}</span>
+        <span class="chapter-piece-actions">
+          <button class="ref-play" data-action="play" type="button" ${cue.take ? "" : "disabled"} aria-label="${escapeHtml(t("Play"))}">${subsPlayingId === cue.id ? "⏸" : "▶"}</button>
+          <button class="compact-button" data-action="edit" type="button" ${cue.take ? "" : "disabled"} title="${escapeHtml(t("Cut pauses and pieces out of this line"))}">✂</button>
+          <button class="compact-button" data-action="redo" type="button" ${subsRunning ? "disabled" : ""}>${escapeHtml(t("↻ Redo"))}</button>
+        </span>
+      </div>
+      <textarea class="text-area chapter-piece-text" data-field="text" rows="1" spellcheck="false"></textarea>
+      ${cue.reason || cue.stale ? `<p class="chapter-piece-reason"></p>` : ""}
+    `;
+    row.querySelector<HTMLTextAreaElement>(".chapter-piece-text")!.value = cue.text;
+    const reason = row.querySelector<HTMLElement>(".chapter-piece-reason");
+    if (reason) reason.textContent = cue.stale ? t("The text was changed: redo this piece") : cue.reason;
+    list.appendChild(row);
+  });
+  const done = subsCues.filter((c) => c.take).length;
+  const marked = subsCues.filter((c) => c.status === "long" || c.status === "bad" || c.stale).length;
+  el("#subs-join-row").classList.toggle("hidden", done === 0);
+  el("#subs-redo-bad").classList.toggle("hidden", marked === 0 || subsRunning);
+  el<HTMLButtonElement>("#subs-redo-bad").textContent = `${t("↻ Redo the marked lines")} (${marked})`;
+  el("#subs-run").classList.toggle("hidden", subsRunning);
+  el("#subs-stop").classList.toggle("hidden", !subsRunning);
+  el("#subs-status").textContent = subsCues.length > 0
+    ? `${done}/${subsCues.length} ${t("lines")} · ${formatTimestamp(subsCues[subsCues.length - 1].end)}${marked > 0 ? ` · ${t("to check")}: ${marked}` : ""}`
+    : "";
+}
+
+function readSubsCues(): boolean {
+  const settings = readSubsSettings();
+  const cues = parseSubtitles(settings.text);
+  if (cues.length === 0) {
+    showToast(t("No subtitle lines found: SRT or VTT with times is needed"), "warning");
+    return false;
+  }
+  subsCharacters = settings.useCharacters ? dramaScene.characters.map((c) => ({ ...c })) : [];
+  subsCues = cues.map((cue) => {
+    const speaker = settings.useCharacters ? speakerOfLine(cue.text, subsCharacters) : { character: -1, text: cue.text };
+    return { ...cue, text: speaker.text, id: nextId("cue"), character: speaker.character, status: "waiting", reason: "", take: null, speed: 1, stale: false };
+  });
+  subsTrack = null;
+  el("#subs-output").classList.add("hidden");
+  saveSubsSettings();
+  renderSubsCues();
+  showToast(`${t("Subtitle lines")}: ${subsCues.length}`);
+  return true;
+}
+
+/** Voices a line; a take that does not fit even sped up is retried, the best kept. */
+async function voiceSubsCue(cue: SubsCue): Promise<void> {
+  const settings = readSubsSettings();
+  const index = subsCues.indexOf(cue);
+  cue.status = "generating";
+  cue.reason = "";
+  renderSubsCues();
+  const { text, voice } = subsCueRequest(cue);
+  let best: { take: DramaGenerationResult; fit: ReturnType<typeof fitSubsTake> } | null = null;
+  for (let attempt = 0; attempt <= settings.retries; attempt++) {
+    if (subsStopRequested) break;
+    const ui = readDramaOptionsFromUi();
+    const raw = await dramaGenerate({
+      request: { text, voice, options: dramaRequestOptions(attempt === 0 ? ui : { ...ui, seed: "" }), streamPlayback: false },
+    });
+    const shortened = autoShortenPauses(raw);
+    const trimmed = trimEdgeSilence(parseWavPcm(shortened.wavBase64));
+    const take: DramaGenerationResult = { ...shortened, ...pcmToResult(trimmed), seconds: frameCount(trimmed) / trimmed.sampleRate };
+    const fit = fitSubsTake(take, subsSlot(index), settings.maxSpeed);
+    if (!best || fit.speed < best.fit.speed || (fit.status !== "long" && best.fit.status === "long")) best = { take, fit };
+    if (fit.status !== "long") break;
+  }
+  if (!best) {
+    cue.status = "waiting";
+    renderSubsCues();
+    return;
+  }
+  cue.take = best.take;
+  cue.speed = best.fit.speed;
+  cue.status = best.fit.status;
+  cue.reason = best.fit.status === "long" ? `${t("longer than its time by")} ${best.fit.overflow.toFixed(1)} ${t("s even sped up: shorten the text or allow more speed")}` : "";
+  cue.stale = false;
+  subsTrack = null;
+  renderSubsCues();
+}
+
+async function runSubs(onlyMarked = false): Promise<void> {
+  if (subsRunning) return;
+  if (subsCues.length === 0 && !readSubsCues()) return;
+  if (!(await ensureDramaLoaded())) return;
+  const todo = subsCues.filter((c) => (onlyMarked ? c.status === "long" || c.status === "bad" || c.stale : !c.take || c.stale));
+  if (todo.length === 0) {
+    showToast(t("All lines are voiced"));
+    return;
+  }
+  subsRunning = true;
+  subsStopRequested = false;
+  el("#subs-progress").classList.remove("hidden");
+  try {
+    for (let i = 0; i < todo.length; i++) {
+      if (subsStopRequested) break;
+      setProgress("#subs-progress-bar", i, todo.length);
+      try {
+        await voiceSubsCue(todo[i]);
+      } catch (e) {
+        if (subsStopRequested || String(e).toLowerCase().includes("cancel")) {
+          if (!todo[i].take) todo[i].status = "waiting";
+          break;
+        }
+        todo[i].status = "bad";
+        todo[i].reason = String(e);
+      }
+    }
+  } finally {
+    subsRunning = false;
+    el("#subs-progress").classList.add("hidden");
+    renderSubsCues();
+  }
+  const marked = subsCues.filter((c) => c.status === "long" || c.status === "bad").length;
+  showToast(subsStopRequested ? t("Stopped: press ▶ to go on") : marked > 0 ? `${t("Subtitles voiced")} · ${t("to check")}: ${marked}` : t("Subtitles voiced"), marked > 0 ? "warning" : "success");
+}
+
+/** All lines at their times in one track, as long as the last line needs. */
+async function buildSubsTrack(): Promise<void> {
+  const voiced = subsCues.filter((c) => c.take);
+  if (voiced.length === 0) return;
+  const settings = readSubsSettings();
+  const button = el<HTMLButtonElement>("#subs-build");
+  button.disabled = true;
+  try {
+    await nextFrame();
+    const placed: Array<{ start: number; pcm: WavPcm }> = [];
+    for (const cue of subsCues) {
+      if (!cue.take) continue;
+      const take = settings.level ? await levelSceneTake(cue.take, true) : cue.take;
+      placed.push({ start: cue.start, pcm: fitSubsTake(take, subsSlot(subsCues.indexOf(cue)), settings.maxSpeed).pcm });
+    }
+    const rate = placed[0].pcm.sampleRate;
+    const end = Math.max(...placed.map((p) => p.start + frameCount(p.pcm) / rate), subsCues[subsCues.length - 1].end);
+    const total = Math.ceil((end + 0.5) * rate);
+    const mix = new Float32Array(total);
+    for (const p of placed) {
+      const pcm = convertChannels(resamplePcm(p.pcm, rate), 1);
+      const at = Math.round(p.start * rate);
+      for (let i = 0; i < pcm.samples.length && at + i < total; i++) mix[at + i] += pcm.samples[i];
+    }
+    const samples = new Int16Array(total);
+    for (let i = 0; i < total; i++) samples[i] = Math.max(-32768, Math.min(32767, Math.round(mix[i])));
+    subsTrack = pcmToResult({ sampleRate: rate, channels: 1, samples });
+    if (subsTrackUrl) URL.revokeObjectURL(subsTrackUrl);
+    subsTrackUrl = URL.createObjectURL(await base64ToBlobAsync(subsTrack.wavBase64, "audio/wav"));
+    el<HTMLAudioElement>("#subs-audio").src = subsTrackUrl;
+    el("#subs-output-info").textContent = `${formatTime(total / rate)} · ${voiced.length}/${subsCues.length} ${t("lines")}`;
+    el("#subs-output").classList.remove("hidden");
+    showToast(t("Track built"));
+  } catch (e) {
+    showToast(`${t("Could not join")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function openSubtitleFile(): Promise<void> {
+  const selected = await open({ filters: [{ name: "Subtitles", extensions: ["srt", "vtt"] }] });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) return;
+  try {
+    const bytes = await base64ToBytesAsync(await invoke<string>("read_file_base64", { path }));
+    el<HTMLTextAreaElement>("#subs-text").value = decodeSubtitleBytes(bytes);
+    readSubsCues();
+  } catch (e) {
+    showToast(`${t("Could not read the file")}: ${e}`, "error");
+  }
+}
+
+function initSubtitles(): void {
+  loadSubsSettings();
+  refreshSubsVoiceOptions();
+  for (const id of ["#subs-text", "#subs-voice", "#subs-use-characters", "#subs-max-speed", "#subs-retries", "#subs-level"]) {
+    el(id).addEventListener("change", saveSubsSettings);
+  }
+  el("#subs-open").addEventListener("click", () => void openSubtitleFile());
+  el("#subs-parse").addEventListener("click", () => {
+    if (subsCues.some((c) => c.take)) {
+      void askChoice(t("Read the pasted subtitles"), t("The voiced lines will be dropped and the subtitles read again. Go on?"), [
+        { value: "cancel", label: t("Cancel") },
+        { value: "go", label: t("Read again"), primary: true },
+      ]).then((answer) => {
+        if (answer === "go") readSubsCues();
+      });
+    } else {
+      readSubsCues();
+    }
+  });
+  el("#subs-run").addEventListener("click", () => void runSubs(false));
+  el("#subs-redo-bad").addEventListener("click", () => void runSubs(true));
+  el("#subs-stop").addEventListener("click", async () => {
+    subsStopRequested = true;
+    await invoke("drama_cancel").catch(() => {});
+  });
+  el("#subs-build").addEventListener("click", () => void buildSubsTrack());
+  el("#subs-save-wav").addEventListener("click", () => {
+    if (subsTrack) void saveResultToFile(subsTrack, "dubbing", "wav");
+  });
+  el("#subs-save-mp3").addEventListener("click", () => {
+    if (subsTrack) void saveResultToFile(subsTrack, "dubbing", "mp3");
+  });
+  el("#subs-to-montage").addEventListener("click", () => {
+    if (subsTrack) addMontageClip(t("Dubbing track"), subsTrack, "subtitles");
+  });
+
+  const list = el<HTMLElement>("#subs-cues");
+  list.addEventListener("input", (event) => {
+    const area = event.target as HTMLTextAreaElement;
+    const cue = subsCues.find((c) => c.id === area.closest<HTMLElement>(".chapter-piece")?.dataset.id);
+    if (!cue || area.dataset.field !== "text") return;
+    cue.text = area.value;
+    if (cue.take && !cue.stale) {
+      cue.stale = true;
+      area.closest<HTMLElement>(".chapter-piece")!.classList.add("stale");
+    }
+  });
+  list.addEventListener("change", (event) => {
+    const select = event.target as HTMLSelectElement;
+    const cue = subsCues.find((c) => c.id === select.closest<HTMLElement>(".chapter-piece")?.dataset.id);
+    if (cue && select.dataset.field === "speaker") {
+      cue.character = Number(select.value);
+      if (cue.take) cue.stale = true;
+      subsTrack = null;
+    }
+    renderSubsCues();
+  });
+  list.addEventListener("click", async (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!button) return;
+    const cue = subsCues.find((c) => c.id === button.closest<HTMLElement>(".chapter-piece")?.dataset.id);
+    if (!cue) return;
+    if (button.dataset.action === "redo") {
+      if (subsRunning || !(await ensureDramaLoaded())) return;
+      subsRunning = true;
+      subsStopRequested = false;
+      try {
+        await voiceSubsCue(cue);
+      } catch (e) {
+        cue.status = "bad";
+        cue.reason = String(e);
+      } finally {
+        subsRunning = false;
+        renderSubsCues();
+      }
+    } else if (button.dataset.action === "edit" && cue.take) {
+      editAudio(`${t("Line")} ${subsCues.indexOf(cue) + 1}`, cue.take.wavBase64, (edited) => {
+        const seconds = edited.sampleCount / edited.channels / edited.sampleRate;
+        cue.take = { ...cue.take!, ...edited, seconds };
+        const fit = fitSubsTake(cue.take, subsSlot(subsCues.indexOf(cue)), readSubsSettings().maxSpeed);
+        cue.speed = fit.speed;
+        cue.status = fit.status;
+        cue.reason = fit.status === "long" ? `${t("longer than its time by")} ${fit.overflow.toFixed(1)} ${t("s even sped up: shorten the text or allow more speed")}` : "";
+        subsTrack = null;
+        renderSubsCues();
+      });
+    } else if (button.dataset.action === "play" && cue.take) {
+      subsPlayer.pause();
+      if (subsPlayingId === cue.id) {
+        subsPlayingId = "";
+        renderSubsCues();
+        return;
+      }
+      // Heard as it will sound in the track: fitted into its time.
+      const fitted = pcmToResult(fitSubsTake(cue.take, subsSlot(subsCues.indexOf(cue)), readSubsSettings().maxSpeed).pcm);
+      if (subsPlayerUrl) URL.revokeObjectURL(subsPlayerUrl);
+      subsPlayerUrl = URL.createObjectURL(await base64ToBlobAsync(fitted.wavBase64, "audio/wav"));
+      subsPlayer.src = subsPlayerUrl;
+      subsPlayer.volume = audioPlayer.volume;
+      subsPlayingId = cue.id;
+      subsPlayer.onended = () => {
+        subsPlayingId = "";
+        renderSubsCues();
+      };
+      renderSubsCues();
+      await subsPlayer.play().catch(() => {
+        subsPlayingId = "";
+        renderSubsCues();
+      });
+    }
+  });
+}
+
 let audiobookSource: { result: GenerationResult; label: string } | null = null;
 
 function readAudiobookForm(): AudiobookExport {
@@ -9152,6 +9599,11 @@ type ProjectFile = {
     normalize: boolean;
     speed: number;
   };
+  subtitles?: {
+    settings: SubsSettings;
+    characters: DramaCharacter[];
+    cues: Array<Omit<SubsCue, "take"> & { take: SavedTake | null }>;
+  };
 };
 
 let currentProject: { dir: string; name: string } | null = null;
@@ -9234,6 +9686,12 @@ async function saveProject(): Promise<void> {
     }
     const montageJoined = montageResult ? (await takeOf("montage_joined.wav", montageResult)).file : null;
 
+    const cues: NonNullable<ProjectFile["subtitles"]>["cues"] = [];
+    for (const cue of subsCues) {
+      const { take, ...rest } = cue;
+      cues.push({ ...rest, status: rest.status === "generating" ? "waiting" : rest.status, take: take ? await takeOf(`subs_${cue.id}.wav`, take) : null });
+    }
+
     const file: ProjectFile = {
       format: PROJECT_FORMAT,
       version: 1,
@@ -9248,6 +9706,7 @@ async function saveProject(): Promise<void> {
         normalize: el<HTMLInputElement>("#montage-normalize").checked,
         speed: parseFloat(el<HTMLInputElement>("#montage-speed").value) || 1,
       },
+      subtitles: { settings: readSubsSettings(), characters: subsCharacters, cues },
     };
     await invoke("save_text_file", { path: `${currentProject.dir}\\project.json`, content: JSON.stringify(file, null, 1) });
     await invoke("project_cleanup_audio", { dir: currentProject.dir, keep });
@@ -9377,6 +9836,27 @@ async function openProject(dir: string, quiet = false): Promise<boolean> {
     }
     renderMontage();
 
+    // Subtitles
+    loadSubsSettings(file.subtitles?.settings ?? { text: "" });
+    subsCharacters = file.subtitles?.characters || [];
+    subsCues = [];
+    for (const saved of file.subtitles?.cues || []) {
+      const { take, ...rest } = saved;
+      let result: DramaGenerationResult | null = null;
+      if (take) {
+        try {
+          result = dramaTake(take, await readProjectTake(take, {}));
+          projectWritten.set(take.file, result.wavBase64);
+        } catch {
+          missing += 1;
+        }
+      }
+      subsCues.push({ ...rest, take: result, status: result ? rest.status : "waiting" });
+    }
+    subsTrack = null;
+    el("#subs-output").classList.add("hidden");
+    renderSubsCues();
+
     localStorage.setItem(LAST_PROJECT_STORAGE_KEY, dir);
     projectSavedAt = file.savedAt;
   } finally {
@@ -9415,6 +9895,11 @@ function clearWorkForNewProject(): void {
   montageResult = null;
   el("#montage-output").classList.add("hidden");
   renderMontage();
+  subsCues = [];
+  subsTrack = null;
+  el<HTMLTextAreaElement>("#subs-text").value = "";
+  el("#subs-output").classList.add("hidden");
+  renderSubsCues();
 }
 
 async function newProject(): Promise<boolean> {
@@ -10240,6 +10725,7 @@ async function main(): Promise<void> {
   initVoiceMixAndLock();
   initChapter();
   initVoiceStudio();
+  initSubtitles();
   initProjects();
   initDictionary();
   initAudiobookExport();
