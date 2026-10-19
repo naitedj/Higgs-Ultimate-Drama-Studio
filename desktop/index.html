@@ -204,6 +204,12 @@
             </div>
             <div class="input-group">
               <div class="remark-bar drama-only hidden" id="drama-remarks" aria-label="Remarks"></div>
+              <div class="custom-tag-row drama-only hidden" id="drama-custom-tag-row">
+                <input id="drama-custom-tag" class="text-input" type="text" spellcheck="false"
+                  placeholder="Your own direction in English, e.g. tired, hoarse voice" />
+                <button id="drama-custom-tag-insert" class="compact-button" type="button" title="Insert it in square brackets at the cursor">Insert [ ]</button>
+                <button id="drama-remarks-edit" class="compact-button" type="button">✎ Edit buttons</button>
+              </div>
               <label for="tts-text" class="field-label">Text to speak</label>
               <textarea id="tts-text" class="text-area" rows="6"
                 placeholder="Type or paste text here…"></textarea>
@@ -1105,6 +1111,30 @@ Third phrase."></textarea>
             <button id="engine-diagnostic-driver" class="compact-button" type="button">Open nvidia.com/drivers</button>
             <button id="engine-diagnostic-cuda" class="compact-button" type="button">Download CUDA runtime</button>
             <button id="engine-diagnostic-vc" class="compact-button primary" type="button">Download VC++ runtime</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ═══════════ Drama 3 remark buttons editor ═══════════ -->
+      <div id="remarks-editor-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="remarks-editor-title">
+        <section class="modal-panel remarks-editor-panel">
+          <div class="modal-head">
+            <div>
+              <h3 id="remarks-editor-title">Remark buttons</h3>
+              <span class="api-status-text">Label in any language, tag in English. Changes are saved at once.</span>
+            </div>
+            <button id="remarks-editor-close" class="popover-close" type="button" aria-label="Close">✕</button>
+          </div>
+          <div class="remarks-editor-head">
+            <span>Label</span>
+            <span>Tag</span>
+            <span></span>
+          </div>
+          <div id="remarks-editor-list" class="remarks-editor-list"></div>
+          <div class="modal-actions">
+            <button id="remarks-editor-add" class="compact-button" type="button">+ Button</button>
+            <button id="remarks-editor-reset" class="compact-button" type="button">Reset to defaults</button>
+            <button id="remarks-editor-done" class="compact-button primary" type="button">Done</button>
           </div>
         </section>
       </div>

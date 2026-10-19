@@ -47,20 +47,23 @@ import {
   DRAMA_DEVICE_STORAGE_KEY,
   DRAMA_LIBRARY_PATH_STORAGE_KEY,
   DRAMA_MODEL_PATH_STORAGE_KEY,
-  DRAMA_REMARKS,
   DRAMA_SELECTED_VOICE_STORAGE_KEY,
   dramaOptionsFromRequest,
   dramaRequestOptions,
   getEngineKind,
   insertTagAtCursor,
   loadDramaOptions,
+  loadDramaRemarks,
   loadDramaVoiceFiles,
+  resetDramaRemarks,
   saveDramaOptions,
+  saveDramaRemarks,
   saveDramaVoiceFiles,
   setEngineKind,
+  toDramaTag,
   voiceNameFromPath,
 } from "./drama";
-import type { DramaOptions, DramaVoiceFile, EngineKind } from "./drama";
+import type { DramaOptions, DramaRemark, DramaVoiceFile, EngineKind } from "./drama";
 import {
   cssVar,
   el,
@@ -4943,18 +4946,144 @@ function setDramaLastSeed(seed: number): void {
   el<HTMLButtonElement>("#drama-seed-keep").disabled = false;
 }
 
+let dramaRemarks: DramaRemark[] = loadDramaRemarks();
+
+function insertCustomDramaTag(): void {
+  const input = el<HTMLInputElement>("#drama-custom-tag");
+  const tag = toDramaTag(input.value);
+  if (!tag) {
+    showToast(t("Type a direction first, e.g. tired, hoarse voice"), "warning");
+    input.focus();
+    return;
+  }
+  insertTagAtCursor(el<HTMLTextAreaElement>("#tts-text"), tag);
+  input.value = "";
+}
+
+function renderRemarksEditor(): void {
+  const list = el<HTMLElement>("#remarks-editor-list");
+  list.innerHTML = "";
+  dramaRemarks.forEach((remark, index) => {
+    const row = document.createElement("div");
+    row.className = "remarks-editor-row";
+    row.dataset.index = String(index);
+    row.innerHTML = `
+      <input class="text-input" data-field="label" type="text" placeholder="${escapeHtml(t("Label"))}" />
+      <input class="text-input" data-field="tag" type="text" spellcheck="false" placeholder="[tired, hoarse voice]" />
+      <span class="remarks-editor-actions">
+        <button class="icon-button" data-action="up" type="button" title="${escapeHtml(t("Move up"))}" ${index === 0 ? "disabled" : ""}>↑</button>
+        <button class="icon-button" data-action="down" type="button" title="${escapeHtml(t("Move down"))}" ${index === dramaRemarks.length - 1 ? "disabled" : ""}>↓</button>
+        <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
+      </span>
+    `;
+    // Values set as properties, not markup, so any text the user typed is safe.
+    row.querySelector<HTMLInputElement>('[data-field="label"]')!.value = t(remark.label);
+    row.querySelector<HTMLInputElement>('[data-field="tag"]')!.value = remark.tag;
+    list.appendChild(row);
+  });
+}
+
+function changeDramaRemarks(next: DramaRemark[]): void {
+  dramaRemarks = next;
+  saveDramaRemarks(dramaRemarks);
+  renderDramaRemarks();
+}
+
+function openRemarksEditor(): void {
+  renderRemarksEditor();
+  el("#remarks-editor-modal").classList.remove("hidden");
+}
+
+function closeRemarksEditor(): void {
+  // Buttons left without a tag do nothing: drop them.
+  const kept = dramaRemarks.filter((r) => toDramaTag(r.tag));
+  if (kept.length !== dramaRemarks.length) changeDramaRemarks(kept);
+  el("#remarks-editor-modal").classList.add("hidden");
+}
+
+function initRemarksEditor(): void {
+  const list = el<HTMLElement>("#remarks-editor-list");
+  list.addEventListener("input", (event) => {
+    const input = event.target as HTMLInputElement;
+    const index = Number(input.closest<HTMLElement>(".remarks-editor-row")?.dataset.index);
+    const remark = dramaRemarks[index];
+    if (!remark) return;
+    if (input.dataset.field === "label") {
+      remark.label = input.value;
+    } else {
+      remark.tag = input.value;
+      // The default tip describes the default tag.
+      remark.tip = undefined;
+      remark.kind = "remark";
+    }
+    changeDramaRemarks([...dramaRemarks]);
+  });
+  // Tidy the tag when the field is left: "tired" → "[tired]".
+  list.addEventListener("focusout", (event) => {
+    const input = event.target as HTMLInputElement;
+    if (input.dataset.field !== "tag") return;
+    const index = Number(input.closest<HTMLElement>(".remarks-editor-row")?.dataset.index);
+    const remark = dramaRemarks[index];
+    if (!remark) return;
+    const tag = toDramaTag(input.value);
+    if (tag && tag !== remark.tag) {
+      remark.tag = tag;
+      input.value = tag;
+      changeDramaRemarks([...dramaRemarks]);
+    }
+  });
+  list.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!button) return;
+    const index = Number(button.closest<HTMLElement>(".remarks-editor-row")?.dataset.index);
+    const next = [...dramaRemarks];
+    if (button.dataset.action === "remove") {
+      next.splice(index, 1);
+    } else {
+      const target = button.dataset.action === "up" ? index - 1 : index + 1;
+      if (target < 0 || target >= next.length) return;
+      [next[index], next[target]] = [next[target], next[index]];
+    }
+    changeDramaRemarks(next);
+    renderRemarksEditor();
+  });
+  el("#remarks-editor-add").addEventListener("click", () => {
+    changeDramaRemarks([...dramaRemarks, { label: "", tag: "", kind: "remark" }]);
+    renderRemarksEditor();
+    const rows = list.querySelectorAll<HTMLInputElement>('[data-field="label"]');
+    rows[rows.length - 1]?.focus();
+  });
+  el("#remarks-editor-reset").addEventListener("click", () => {
+    dramaRemarks = resetDramaRemarks();
+    renderDramaRemarks();
+    renderRemarksEditor();
+    showToast(t("Remark buttons reset to defaults"));
+  });
+  el("#remarks-editor-done").addEventListener("click", closeRemarksEditor);
+  el("#remarks-editor-close").addEventListener("click", closeRemarksEditor);
+  const modal = el<HTMLElement>("#remarks-editor-modal");
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closeRemarksEditor();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !modal.classList.contains("hidden")) closeRemarksEditor();
+  });
+}
+
 function renderDramaRemarks(): void {
   const bar = el<HTMLElement>("#drama-remarks");
   bar.innerHTML = "";
-  for (const remark of DRAMA_REMARKS) {
+  for (const remark of dramaRemarks) {
+    if (!toDramaTag(remark.tag)) continue;
     const button = document.createElement("button");
     button.type = "button";
     button.className = `compact-button remark-button ${remark.kind || "remark"}`;
-    button.textContent = t(remark.label);
-    button.title = remark.tip ? `${remark.tag}: ${t(remark.tip)}` : remark.tag;
+    const tag = toDramaTag(remark.tag);
+    button.textContent = t(remark.label).trim() || tag;
+    button.title = remark.tip ? `${tag}: ${t(remark.tip)}` : tag;
     // Keep the textarea's cursor: a mousedown on the button would take the focus away.
     button.addEventListener("mousedown", (event) => event.preventDefault());
-    button.addEventListener("click", () => insertTagAtCursor(el<HTMLTextAreaElement>("#tts-text"), remark.tag));
+    button.addEventListener("click", () => insertTagAtCursor(el<HTMLTextAreaElement>("#tts-text"), tag));
     bar.appendChild(button);
   }
 }
@@ -5040,6 +5169,16 @@ function initDramaEngine(): void {
   });
 
   renderDramaRemarks();
+  initRemarksEditor();
+  el("#drama-remarks-edit").addEventListener("click", openRemarksEditor);
+  el("#drama-custom-tag-insert").addEventListener("mousedown", (event) => event.preventDefault());
+  el("#drama-custom-tag-insert").addEventListener("click", insertCustomDramaTag);
+  el<HTMLInputElement>("#drama-custom-tag").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      insertCustomDramaTag();
+    }
+  });
 
   applyDramaOptionsToUi(loadDramaOptions());
   const persist = () => {

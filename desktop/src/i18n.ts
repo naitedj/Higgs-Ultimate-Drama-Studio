@@ -594,6 +594,21 @@ export const RU: Record<string, string> = {
   "Drama 3 voice created and added": "Голос Drama 3 создан и подключён",
   "Drama 3 voice created; it will be added when the model loads": "Голос Drama 3 создан; он подключится при загрузке модели",
   "Could not create the Drama 3 voice": "Не удалось создать голос Drama 3",
+  // Own remarks: free tag field and the buttons editor
+  "Your own direction in English, e.g. tired, hoarse voice": "Свой тег по-английски, например tired, hoarse voice",
+  "Insert it in square brackets at the cursor": "Вставить в квадратных скобках в позицию курсора",
+  "Insert [ ]": "Вставить [ ]",
+  "✎ Edit buttons": "✎ Настроить кнопки",
+  "Type a direction first, e.g. tired, hoarse voice": "Сначала впишите указание, например tired, hoarse voice",
+  "Remark buttons": "Кнопки-ремарки",
+  "Label in any language, tag in English. Changes are saved at once.":
+    "Подпись на любом языке, тег по-английски. Изменения сохраняются сразу.",
+  "Label": "Подпись",
+  "Tag": "Тег",
+  "Move up": "Выше",
+  "Move down": "Ниже",
+  "+ Button": "+ Кнопка",
+  "Remark buttons reset to defaults": "Кнопки-ремарки сброшены по умолчанию",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

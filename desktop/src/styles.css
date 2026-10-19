@@ -2260,3 +2260,19 @@ input[type="range"]::-moz-range-thumb {
 }
 .speaker-drama-box #speaker-drama-make-btn { width: 100%; }
 .mini-state.warn { border-color: #b8862e; color: #e0a33a; }
+.custom-tag-row { display: flex; gap: 6px; margin-bottom: 10px; }
+.custom-tag-row .text-input { flex: 1; min-width: 0; }
+.custom-tag-row .compact-button { flex: 0 0 auto; }
+.remarks-editor-panel { max-width: 640px; width: min(640px, 92vw); }
+.remarks-editor-head,
+.remarks-editor-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1.3fr auto;
+  align-items: center;
+}
+.remarks-editor-head { color: var(--text-muted); font-size: 11px; font-weight: 700; padding: 8px 16px 4px; text-transform: uppercase; }
+.remarks-editor-list { display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow-y: auto; padding: 4px 16px 12px; }
+.remarks-editor-actions { display: flex; gap: 4px; }
+.remarks-editor-actions .icon-button { min-width: 28px; }
+.remarks-editor-actions .icon-button.danger:hover { color: #ef4444; border-color: #ef4444; }

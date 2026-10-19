@@ -174,6 +174,42 @@ export const DRAMA_REMARKS: DramaRemark[] = [
   },
 ];
 
+export const DRAMA_REMARKS_STORAGE_KEY = "dramaStudio.remarks";
+
+/** The remark buttons in use: the user's own set, or the defaults. */
+export function loadDramaRemarks(): DramaRemark[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DRAMA_REMARKS_STORAGE_KEY) || "null");
+    if (Array.isArray(raw)) {
+      return raw
+        .filter((r) => r && typeof r.label === "string" && typeof r.tag === "string")
+        .map((r) => ({ label: r.label, tag: r.tag, tip: typeof r.tip === "string" ? r.tip : undefined, kind: r.kind }));
+    }
+  } catch {
+    // Fall back to the defaults.
+  }
+  return DRAMA_REMARKS.map((r) => ({ ...r }));
+}
+
+export function saveDramaRemarks(remarks: DramaRemark[]): void {
+  localStorage.setItem(DRAMA_REMARKS_STORAGE_KEY, JSON.stringify(remarks));
+}
+
+export function resetDramaRemarks(): DramaRemark[] {
+  localStorage.removeItem(DRAMA_REMARKS_STORAGE_KEY);
+  return DRAMA_REMARKS.map((r) => ({ ...r }));
+}
+
+/**
+ * A direction as a tag: "tired, hoarse" → "[tired, hoarse]". Brackets the user typed
+ * around it are kept as one pair; brackets inside are dropped, since Drama 3 would
+ * read them as the end of the direction. "" for an empty direction.
+ */
+export function toDramaTag(direction: string): string {
+  const inner = direction.trim().replace(/^\[+|\]+$/g, "").replace(/[[\]]/g, "").trim();
+  return inner ? `[${inner}]` : "";
+}
+
 /**
  * Inserts `tag` at the textarea's cursor (replacing a selection), with a space on
  * either side where the neighbouring text needs one, and leaves the cursor after it.
