@@ -4670,6 +4670,18 @@ async fn drama_voice_make(
     Ok(serde_json::json!({ "path": path, "modelInfo": info }))
 }
 
+/// Путь временного файла Drama Studio (например, кусок главы для проверки распознаванием).
+/// `name` — только [0-9a-zA-Z._-].
+#[tauri::command]
+fn drama_temp_path(name: String) -> Result<String, String> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+        return Err(format!("недопустимое имя временного файла: {name}"));
+    }
+    let dir = std::env::temp_dir().join("drama-studio");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(name).to_string_lossy().into_owned())
+}
+
 /// Путь общего файла голосов сцены (несколько персонажей): drama-voices рядом с программой.
 /// `key` — короткий хеш состава персонажей, только [0-9a-z].
 #[tauri::command]
@@ -4848,6 +4860,7 @@ pub fn run() {
             drama_voice_add,
             drama_voice_make,
             drama_scene_voice_path,
+            drama_temp_path,
             drama_log,
         ])
         .run(tauri::generate_context!())

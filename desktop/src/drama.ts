@@ -619,3 +619,123 @@ export function markupBookText(text: string, characters: DramaCharacter[], narra
   }
   return { script: lines.join("\n"), replies: replies.length, guessed };
 }
+
+// ─── Chapter: splitting a long text and checking each piece ─────────────────
+
+export type ChapterPieceKind = "narration" | "dialogue";
+
+export type ChapterPiece = {
+  text: string;
+  /** Character index in the scene list, or -1 for the chapter's narrator voice. */
+  character: number;
+  kind: ChapterPieceKind;
+  /** The piece ends a paragraph (a longer pause follows). */
+  paragraphEnd: boolean;
+};
+
+/** Sentences of a text, each with its closing punctuation. */
+export function splitSentences(text: string): string[] {
+  const parts = text.match(/[^.!?…]+(?:[.!?…]+["»”)]*|$)/gu) || [text];
+  return parts.map((s) => s.trim()).filter(Boolean);
+}
+
+/** A paragraph cut into pieces of at most about `maxChars`, at sentence ends. */
+export function packSentences(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+  const pieces: string[] = [];
+  let current = "";
+  for (const sentence of splitSentences(text)) {
+    if (current && current.length + 1 + sentence.length > maxChars) {
+      pieces.push(current);
+      current = sentence;
+    } else {
+      current = current ? `${current} ${sentence}` : sentence;
+    }
+  }
+  if (current) pieces.push(current);
+  return pieces;
+}
+
+/**
+ * The chapter's pieces. Without characters every paragraph is narration; with them,
+ * book dialogue is marked up as in Multi Speaker (author's words to the narrator).
+ */
+export function splitChapter(text: string, maxChars: number, characters: DramaCharacter[] | null): ChapterPiece[] {
+  const pieces: ChapterPiece[] = [];
+  const push = (body: string, character: number, kind: ChapterPieceKind) => {
+    const parts = packSentences(body.trim(), maxChars);
+    parts.forEach((part, i) => pieces.push({ text: part, character, kind, paragraphEnd: i === parts.length - 1 }));
+  };
+  if (!characters || characters.length === 0) {
+    for (const paragraph of text.split(/\r?\n/)) if (paragraph.trim()) push(paragraph, -1, "narration");
+    return pieces;
+  }
+  // Narrator for the markup: the scene's, or a stand-in that maps back to the chapter voice.
+  const list = characters.map((c) => ({ ...c }));
+  let narrator = findNarrator(list);
+  if (narrator < 0) {
+    list.push({ id: "chapter-narrator", name: "Рассказчик", voice: "none", description: "" });
+    narrator = list.length - 1;
+  }
+  const { script } = markupBookText(text, list, narrator);
+  for (const line of script.split("\n")) {
+    const prefix = splitNamePrefix(line);
+    const index = prefix ? characterIndexForPrefix(prefix.name, list) : -1;
+    const body = prefix && index >= 0 ? prefix.text : line;
+    if (!body.trim()) continue;
+    const isNarrator = index < 0 || index === narrator;
+    push(body, isNarrator ? -1 : index, isNarrator ? "narration" : "dialogue");
+  }
+  return pieces;
+}
+
+/** Words of a text for comparing with what speech recognition heard. */
+export function comparableWords(text: string): string[] {
+  return spokenTextOnly(text)
+    .toLocaleLowerCase()
+    .replace(/ё/g, "е")
+    .split(/[^\p{L}\d]+/u)
+    .filter(Boolean);
+}
+
+function spokenTextOnly(text: string): string {
+  return text.replace(/<\|[^|]*\|>/g, " ").replace(/\[[^\]]*\]/g, " ");
+}
+
+/**
+ * How much of the expected text was heard: the share of its words found in order
+ * in the recognised words (longest common subsequence), and the words missed.
+ */
+export function wordCoverage(expected: string, heard: string): { coverage: number; missing: string[] } {
+  const a = comparableWords(expected);
+  const b = comparableWords(heard);
+  if (a.length === 0) return { coverage: 1, missing: [] };
+  const same = (x: string, y: string) => x === y || (x.length >= 5 && y.length >= 5 && x.slice(0, -2) === y.slice(0, -2));
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      dp[i][j] = same(a[i], b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const missing: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length) {
+    if (j < b.length && same(a[i], b[j])) {
+      i++;
+      j++;
+    } else if (j < b.length && dp[i][j + 1] >= dp[i + 1][j]) {
+      j++;
+    } else {
+      missing.push(a[i]);
+      i++;
+    }
+  }
+  return { coverage: dp[0][0] / a.length, missing };
+}
+
+/** Characters per second of a take, against its text's speakable characters. */
+export function charsPerSecond(text: string, seconds: number): number {
+  const speakable = spokenTextOnly(text).replace(/\s+/g, " ").trim().length;
+  return seconds > 0 ? speakable / seconds : 0;
+}

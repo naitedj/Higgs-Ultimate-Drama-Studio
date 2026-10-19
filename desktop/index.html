@@ -184,6 +184,7 @@
             <button class="mode-tab" data-mode="clone" role="tab" aria-selected="false">Voice Clone</button>
             <button class="mode-tab" data-mode="finish" role="tab" aria-selected="false">Continue Speech</button>
             <button class="mode-tab" data-mode="multi" role="tab" aria-selected="false">Multi Speaker</button>
+            <button class="mode-tab drama-only hidden" data-mode="chapter" role="tab" aria-selected="false">Chapter</button>
             <button class="mode-tab" data-mode="api" role="tab" aria-selected="false">API</button>
             <button class="mode-tab" data-mode="speakers" role="tab" aria-selected="false">Speaker Gallery</button>
             <button class="mode-tab" data-mode="batch" role="tab" aria-selected="false">Batch</button>
@@ -828,6 +829,81 @@
             </div>
             <div id="recent-list" class="history-list">
               <p class="empty-state">No generations yet</p>
+            </div>
+          </div>
+
+          <!-- ═══ Chapter: a long text in checked pieces ═══ -->
+          <div class="mode-content hidden" id="mode-chapter">
+            <div class="history-head">
+              <h3>Chapter</h3>
+              <span id="chapter-status" class="api-status-text"></span>
+            </div>
+            <p class="input-hint">Paste a chapter: it is cut into pieces (paragraphs, long ones at sentence ends) that are voiced one after another and checked. A bad piece is redone with another seed automatically. Pieces are kept until the program is closed: save the joined chapter to a file.</p>
+            <div class="drama-remarks" data-target="#chapter-text"></div>
+            <textarea id="chapter-text" class="text-area" rows="10" placeholder="Paste the chapter text here…"></textarea>
+            <div class="chapter-settings">
+              <label class="chapter-field">
+                <span>Narrator voice</span>
+                <select id="chapter-voice" class="select-input"></select>
+              </label>
+              <label class="inline-toggle" title="Dialogue with dashes is marked up as in Multi Speaker and voiced by its characters (their voices are set there)">
+                <span>Dialogue in the characters' voices</span>
+                <span class="toggle-switch"><input type="checkbox" id="chapter-use-characters" /><span class="toggle-slider"></span></span>
+              </label>
+              <label class="chapter-field">
+                <span>Piece up to, characters</span>
+                <input id="chapter-max-chars" type="number" class="number-input" min="80" max="1200" step="20" value="400" />
+              </label>
+              <label class="inline-toggle" title="Each piece is recognised (Parakeet) and compared with its text: missing words mark it bad">
+                <span>Check by recognition</span>
+                <span class="toggle-switch"><input type="checkbox" id="chapter-check" checked /><span class="toggle-slider"></span></span>
+              </label>
+              <label class="chapter-field">
+                <span>Retries of a bad piece</span>
+                <input id="chapter-retries" type="number" class="number-input" min="0" max="5" step="1" value="2" />
+              </label>
+            </div>
+            <div class="chapter-settings">
+              <label class="chapter-field">
+                <span>Pause after a paragraph, s</span>
+                <input id="chapter-pause-paragraph" type="number" class="number-input" min="0" max="5" step="0.05" value="0.8" />
+              </label>
+              <label class="chapter-field">
+                <span>between sentences, s</span>
+                <input id="chapter-pause-sentence" type="number" class="number-input" min="0" max="3" step="0.05" value="0.3" />
+              </label>
+              <label class="chapter-field">
+                <span>after a reply, s</span>
+                <input id="chapter-pause-dialogue" type="number" class="number-input" min="0" max="3" step="0.05" value="0.45" />
+              </label>
+            </div>
+            <div class="action-row">
+              <button id="chapter-split" class="compact-button" type="button">Cut into pieces</button>
+              <button id="chapter-run" class="primary-btn" type="button">▶ Voice the chapter</button>
+              <button id="chapter-stop" class="cancel-btn hidden" type="button">⏹ Stop</button>
+              <button id="chapter-redo-bad" class="compact-button hidden" type="button">↻ Redo the marked pieces</button>
+            </div>
+            <div class="progress-track chapter-progress hidden" id="chapter-progress"><div class="progress-bar" id="chapter-progress-bar"></div></div>
+            <div id="chapter-pieces" class="chapter-pieces"></div>
+            <div class="montage-join-row chapter-join hidden" id="chapter-join-row">
+              <label class="inline-toggle">
+                <span>Even out loudness</span>
+                <span class="toggle-switch"><input type="checkbox" id="chapter-level" checked /><span class="toggle-slider"></span></span>
+              </label>
+              <button id="chapter-join" class="primary-btn" type="button">⧉ Join the chapter</button>
+            </div>
+            <div id="chapter-output" class="montage-output hidden">
+              <div class="output-head">
+                <h3>Chapter</h3>
+                <span id="chapter-output-info" class="api-status-text"></span>
+              </div>
+              <audio id="chapter-audio" controls preload="auto"></audio>
+              <div class="montage-output-actions">
+                <button id="chapter-edit" class="compact-button" type="button">✂ Edit</button>
+                <button id="chapter-save-wav" class="compact-button primary" type="button">Save WAV</button>
+                <button id="chapter-save-mp3" class="compact-button" type="button">Save MP3</button>
+                <button id="chapter-to-montage" class="compact-button" type="button">+ To montage</button>
+              </div>
             </div>
           </div>
 

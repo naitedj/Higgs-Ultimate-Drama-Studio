@@ -71,6 +71,9 @@ import {
   parseScene,
   saveDramaScene,
   sceneNameCandidates,
+  splitChapter,
+  wordCoverage,
+  charsPerSecond,
   bookNameCandidates,
   findNarrator,
   markupBookText,
@@ -94,6 +97,7 @@ import {
   voiceNameFromPath,
 } from "./drama";
 import type {
+  ChapterPiece,
   DramaCharacter,
   DramaOptions,
   DramaRemark,
@@ -1450,9 +1454,10 @@ function switchMode(mode: Mode): void {
     content.classList.toggle("hidden", content.id !== `mode-${mode}`);
   }
   // Hide generation UI in utility views.
-  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage";
+  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter";
   if (mode === "batch") refreshBatchPersonaOptions();
   if (mode === "montage") renderMontageHistorySelect();
+  if (mode === "chapter") refreshChapterVoiceOptions();
   if (mode === "transcript") void refreshTranscriptModelNote();
   if (mode === "transcript" || mode === "clone") void refreshVoiceCleanNote();
   el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility || activeEngine === "drama");
@@ -4683,7 +4688,8 @@ function applyEngineKind(kind: EngineKind): void {
   for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
     if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
   }
-  switchMode(drama && HIGGS_ONLY_MODES.includes(currentMode) ? "tts" : currentMode);
+  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter";
+  switchMode(unavailable ? "tts" : currentMode);
   if (drama) renderDramaChips();
   else void refreshHiggsChips();
 }
@@ -5267,6 +5273,7 @@ function renderDramaVoiceSelect(): void {
   }
   select.value = Array.from(select.options).some((o) => o.value === current) ? current : "none";
   el<HTMLButtonElement>("#drama-voice-remove-btn").disabled = !dramaVoiceFiles.some((v) => v.name === select.value);
+  refreshChapterVoiceOptions();
   // The Multi Speaker characters choose from the same voices.
   refreshSceneVoiceOptions();
 }
@@ -8038,6 +8045,507 @@ async function addMontageFiles(): Promise<void> {
   if (paths.length > 0) showToast(`${t("Added to montage")}: ${paths.length}`);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Chapter: a long text cut into pieces, voiced one after another and checked
+// (length limit, speed, words heard by Parakeet); a bad piece is redone with a
+// new seed and the best take is kept. Pieces live for the session.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type ChapterPieceStatus = "waiting" | "generating" | "ok" | "warn" | "bad";
+type ChapterPieceState = ChapterPiece & {
+  id: string;
+  status: ChapterPieceStatus;
+  reason: string;
+  result: DramaGenerationResult | null;
+  coverage: number | null;
+  attempts: number;
+  /** The text was edited after the take: it needs a new one. */
+  stale: boolean;
+};
+type ChapterSettings = {
+  text: string;
+  voice: string;
+  useCharacters: boolean;
+  maxChars: number;
+  check: boolean;
+  retries: number;
+  pauseParagraph: number;
+  pauseSentence: number;
+  pauseDialogue: number;
+  level: boolean;
+};
+
+const CHAPTER_STORAGE_KEY = "dramaStudio.chapter";
+let chapterPieces: ChapterPieceState[] = [];
+/** The scene characters the pieces were cut with (their voices). */
+let chapterCharacters: DramaCharacter[] = [];
+let chapterRunning = false;
+let chapterStopRequested = false;
+let chapterResult: GenerationResult | null = null;
+let chapterAudioUrl = "";
+const chapterPiecePlayer = new Audio();
+let chapterPiecePlayerUrl = "";
+let chapterPlayingId = "";
+
+function readChapterSettings(): ChapterSettings {
+  const num = (id: string, min: number, max: number, fallback: number) => {
+    const v = parseFloat(el<HTMLInputElement>(id).value);
+    return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+  };
+  return {
+    text: el<HTMLTextAreaElement>("#chapter-text").value,
+    voice: el<HTMLSelectElement>("#chapter-voice").value || "none",
+    useCharacters: el<HTMLInputElement>("#chapter-use-characters").checked,
+    maxChars: Math.round(num("#chapter-max-chars", 80, 1200, 400)),
+    check: el<HTMLInputElement>("#chapter-check").checked,
+    retries: Math.round(num("#chapter-retries", 0, 5, 2)),
+    pauseParagraph: num("#chapter-pause-paragraph", 0, 5, 0.8),
+    pauseSentence: num("#chapter-pause-sentence", 0, 3, 0.3),
+    pauseDialogue: num("#chapter-pause-dialogue", 0, 3, 0.45),
+    level: el<HTMLInputElement>("#chapter-level").checked,
+  };
+}
+
+function saveChapterSettings(): void {
+  try {
+    localStorage.setItem(CHAPTER_STORAGE_KEY, JSON.stringify(readChapterSettings()));
+  } catch {
+    // A very long chapter may not fit: the settings are a convenience.
+  }
+}
+
+function loadChapterSettings(): void {
+  let saved: Partial<ChapterSettings> = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(CHAPTER_STORAGE_KEY) || "{}") || {};
+  } catch {
+    saved = {};
+  }
+  if (typeof saved.text === "string") el<HTMLTextAreaElement>("#chapter-text").value = saved.text;
+  if (typeof saved.useCharacters === "boolean") el<HTMLInputElement>("#chapter-use-characters").checked = saved.useCharacters;
+  if (typeof saved.check === "boolean") el<HTMLInputElement>("#chapter-check").checked = saved.check;
+  if (typeof saved.level === "boolean") el<HTMLInputElement>("#chapter-level").checked = saved.level;
+  const setNum = (id: string, v: unknown) => {
+    if (typeof v === "number" && Number.isFinite(v)) el<HTMLInputElement>(id).value = String(v);
+  };
+  setNum("#chapter-max-chars", saved.maxChars);
+  setNum("#chapter-retries", saved.retries);
+  setNum("#chapter-pause-paragraph", saved.pauseParagraph);
+  setNum("#chapter-pause-sentence", saved.pauseSentence);
+  setNum("#chapter-pause-dialogue", saved.pauseDialogue);
+  if (typeof saved.voice === "string") el<HTMLSelectElement>("#chapter-voice").dataset.saved = saved.voice;
+}
+
+function refreshChapterVoiceOptions(): void {
+  const select = document.querySelector<HTMLSelectElement>("#chapter-voice");
+  if (!select) return;
+  const current = select.value || select.dataset.saved || "none";
+  const names = dramaVoiceNames().filter((n) => !n.startsWith(SCENE_VOICE_PREFIX));
+  if (!names.includes(current)) names.push(current);
+  select.innerHTML = names
+    .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n === "none" ? t("none (the model chooses)") : n)}</option>`)
+    .join("");
+  select.value = current;
+}
+
+function chapterPieceSpeaker(piece: ChapterPieceState): string {
+  return piece.character >= 0 ? chapterCharacters[piece.character]?.name || "?" : "";
+}
+
+/** The voice and text a piece is generated with. */
+function chapterPieceRequest(piece: ChapterPieceState): { text: string; voice: string } {
+  const loaded = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+  if (piece.character >= 0) {
+    const character = chapterCharacters[piece.character];
+    const voice = character && character.voice !== "none" && loaded.has(character.voice) ? character.voice : "none";
+    if (character && character.voice !== "none" && voice === "none") {
+      throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
+    }
+    return { text: `${characterVoiceHint(character)}${piece.text}`, voice };
+  }
+  const voice = readChapterSettings().voice;
+  if (voice !== "none" && !loaded.has(voice)) throw new Error(`${t("Voice not found")}: ${voice}`);
+  return { text: piece.text, voice };
+}
+
+const CHAPTER_STATUS_LABEL: Record<ChapterPieceStatus, string> = {
+  waiting: "Waiting",
+  generating: "Generating…",
+  ok: "OK",
+  warn: "Check",
+  bad: "Bad",
+};
+
+function renderChapterPieces(): void {
+  const list = el<HTMLElement>("#chapter-pieces");
+  list.innerHTML = "";
+  chapterPieces.forEach((piece, index) => {
+    const row = document.createElement("div");
+    row.className = `chapter-piece ${piece.status}${piece.stale ? " stale" : ""}`;
+    row.dataset.id = piece.id;
+    const speaker = chapterPieceSpeaker(piece);
+    const meta: string[] = [];
+    if (piece.result) meta.push(`${piece.result.seconds.toFixed(1)} ${t("s")}`);
+    if (piece.coverage !== null) meta.push(`${t("words")} ${Math.round(piece.coverage * 100)}%`);
+    if (piece.attempts > 1) meta.push(`${t("takes")}: ${piece.attempts}`);
+    row.innerHTML = `
+      <div class="chapter-piece-head">
+        <span class="chapter-piece-index">${index + 1}</span>
+        <span class="chapter-piece-status">${escapeHtml(t(CHAPTER_STATUS_LABEL[piece.status]))}</span>
+        ${speaker ? `<strong class="chapter-piece-speaker" style="color:${sceneColor(piece.character)}">${escapeHtml(speaker)}</strong>` : ""}
+        <span class="chapter-piece-meta">${escapeHtml(meta.join(" · "))}</span>
+        <span class="chapter-piece-actions">
+          <button class="ref-play" data-action="play" type="button" ${piece.result ? "" : "disabled"} aria-label="${escapeHtml(t("Play"))}">${chapterPlayingId === piece.id ? "⏸" : "▶"}</button>
+          <button class="compact-button" data-action="edit" type="button" ${piece.result ? "" : "disabled"} title="${escapeHtml(t("Cut pauses and pieces out of this line"))}">✂</button>
+          <button class="compact-button" data-action="redo" type="button" ${chapterRunning ? "disabled" : ""}>${escapeHtml(t("↻ Redo"))}</button>
+        </span>
+      </div>
+      <textarea class="text-area chapter-piece-text" data-field="text" rows="2" spellcheck="false"></textarea>
+      ${piece.reason || piece.stale ? `<p class="chapter-piece-reason"></p>` : ""}
+    `;
+    row.querySelector<HTMLTextAreaElement>(".chapter-piece-text")!.value = piece.text;
+    const reason = row.querySelector<HTMLElement>(".chapter-piece-reason");
+    if (reason) reason.textContent = piece.stale ? t("The text was changed: redo this piece") : piece.reason;
+    list.appendChild(row);
+  });
+  const done = chapterPieces.filter((p) => p.result).length;
+  const marked = chapterPieces.filter((p) => p.status === "bad" || p.status === "warn" || p.stale).length;
+  el("#chapter-join-row").classList.toggle("hidden", done === 0);
+  el("#chapter-redo-bad").classList.toggle("hidden", marked === 0 || chapterRunning);
+  el<HTMLButtonElement>("#chapter-redo-bad").textContent = `${t("↻ Redo the marked pieces")} (${marked})`;
+  el<HTMLButtonElement>("#chapter-run").classList.toggle("hidden", chapterRunning);
+  el<HTMLButtonElement>("#chapter-stop").classList.toggle("hidden", !chapterRunning);
+  el<HTMLButtonElement>("#chapter-split").disabled = chapterRunning;
+  const seconds = chapterPieces.reduce((sum, p) => sum + (p.result?.seconds || 0), 0);
+  el("#chapter-status").textContent = chapterPieces.length > 0
+    ? `${done}/${chapterPieces.length} ${t("pieces")} · ${formatTime(seconds)}${marked > 0 ? ` · ${t("to check")}: ${marked}` : ""}`
+    : "";
+}
+
+function splitChapterIntoPieces(): boolean {
+  const settings = readChapterSettings();
+  if (!settings.text.trim()) {
+    showToast(t("Paste the chapter text first"), "warning");
+    return false;
+  }
+  chapterCharacters = settings.useCharacters ? dramaScene.characters.map((c) => ({ ...c })) : [];
+  if (settings.useCharacters && chapterCharacters.length === 0) {
+    showToast(t("Add characters in the Multi Speaker tab first, or turn off dialogue in the characters' voices"), "warning");
+    return false;
+  }
+  const pieces = splitChapter(settings.text, settings.maxChars, settings.useCharacters ? chapterCharacters : null);
+  chapterPieces = pieces.map((piece) => ({
+    ...piece,
+    id: nextId("piece"),
+    status: "waiting",
+    reason: "",
+    result: null,
+    coverage: null,
+    attempts: 0,
+    stale: false,
+  }));
+  chapterResult = null;
+  el("#chapter-output").classList.add("hidden");
+  saveChapterSettings();
+  renderChapterPieces();
+  showToast(`${t("Cut into pieces")}: ${chapterPieces.length}`);
+  return true;
+}
+
+type ChapterCheck = { status: "ok" | "warn" | "bad"; reason: string; coverage: number | null; score: number };
+
+/** Checks a take of a piece: the length limit, a believable speed, and the words heard. */
+async function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationResult, recognise: boolean): Promise<ChapterCheck> {
+  const problems: string[] = [];
+  let status: ChapterCheck["status"] = "ok";
+  if (take.stop === "max_seconds") {
+    status = "bad";
+    problems.push(t("hit the length limit: the end is missing"));
+  }
+  const cps = charsPerSecond(piece.text, take.seconds);
+  if (cps > 0 && cps < 6) {
+    status = "bad";
+    problems.push(t("too long for its text: silences or repeats"));
+  } else if (cps > 32) {
+    status = "bad";
+    problems.push(t("too short for its text: words skipped"));
+  }
+  let coverage: number | null = null;
+  if (recognise) {
+    try {
+      const path = await invoke<string>("drama_temp_path", { name: `chapter_${piece.id}.wav` });
+      await invoke("save_binary_file", { path, base64Data: take.wavBase64 });
+      const heard = await tryAutoTranscribeSilently(path);
+      if (heard) {
+        const check = wordCoverage(piece.text, heard);
+        coverage = check.coverage;
+        if (check.coverage < 0.8) {
+          status = "bad";
+          problems.push(`${t("words missing")}: ${check.missing.slice(0, 8).join(", ")}`);
+        } else if (check.coverage < 0.93 && status === "ok") {
+          status = "warn";
+          problems.push(`${t("maybe missing")}: ${check.missing.slice(0, 8).join(", ")}`);
+        }
+      }
+    } catch {
+      // Recognition is a help: without it the piece is judged by the rest.
+    }
+  }
+  const speedPenalty = cps > 0 ? Math.min(1, Math.abs(Math.log(cps / 14)) / 2) : 1;
+  const score = (coverage ?? 1) - speedPenalty * 0.5 - (status === "bad" ? 1 : 0);
+  return { status, reason: problems.join("; "), coverage, score };
+}
+
+/** Voices one piece, retrying a bad take with new seeds; keeps the best take. */
+async function voiceChapterPiece(piece: ChapterPieceState): Promise<void> {
+  const settings = readChapterSettings();
+  const recognise = settings.check && Boolean(localStorage.getItem("higgsAudio.whisperModel"));
+  piece.status = "generating";
+  piece.reason = "";
+  renderChapterPieces();
+  const { text, voice } = chapterPieceRequest(piece);
+  let best: { take: DramaGenerationResult; check: ChapterCheck } | null = null;
+  let attempts = 0;
+  for (let attempt = 0; attempt <= settings.retries; attempt++) {
+    if (chapterStopRequested) break;
+    // The seed field counts for the first take only; retries need other seeds.
+    const ui = readDramaOptionsFromUi();
+    const options = dramaRequestOptions(attempt === 0 ? ui : { ...ui, seed: "" });
+    const raw = await invoke<DramaGenerationResult>("drama_generate", {
+      request: { text, voice, options, streamPlayback: false },
+    });
+    attempts += 1;
+    const take = autoShortenPauses(raw);
+    const check = await checkChapterTake(piece, take, recognise);
+    if (!best || check.score > best.check.score) best = { take, check };
+    if (check.status !== "bad") break;
+  }
+  if (!best) {
+    piece.status = "waiting";
+    renderChapterPieces();
+    return;
+  }
+  piece.result = best.take;
+  piece.status = best.check.status;
+  piece.reason = best.check.reason;
+  piece.coverage = best.check.coverage;
+  piece.attempts = attempts;
+  piece.stale = false;
+  chapterResult = null;
+  renderChapterPieces();
+}
+
+/** Voices the pieces that need it (all waiting ones, or the marked ones), in order. */
+async function runChapter(onlyMarked = false): Promise<void> {
+  if (chapterRunning) return;
+  if (chapterPieces.length === 0 && !splitChapterIntoPieces()) return;
+  if (!(await ensureDramaLoaded())) return;
+  const todo = chapterPieces.filter((p) =>
+    onlyMarked ? p.status === "bad" || p.status === "warn" || p.stale : !p.result || p.stale,
+  );
+  if (todo.length === 0) {
+    showToast(t("All pieces are voiced"));
+    return;
+  }
+  chapterRunning = true;
+  chapterStopRequested = false;
+  el("#chapter-progress").classList.remove("hidden");
+  const started = performance.now();
+  let failed = 0;
+  try {
+    for (let i = 0; i < todo.length; i++) {
+      if (chapterStopRequested) break;
+      setProgress("#chapter-progress-bar", i, todo.length);
+      const elapsed = (performance.now() - started) / 1000;
+      const left = i > 0 ? (elapsed / i) * (todo.length - i) : 0;
+      el("#chapter-status").textContent = `${t("Piece")} ${i + 1}/${todo.length}${i > 0 ? ` · ${t("about")} ${formatTime(left)} ${t("left")}` : ""}`;
+      try {
+        await voiceChapterPiece(todo[i]);
+      } catch (e) {
+        if (chapterStopRequested || String(e).toLowerCase().includes("cancel")) {
+          todo[i].status = todo[i].result ? todo[i].status : "waiting";
+          break;
+        }
+        failed += 1;
+        todo[i].status = "bad";
+        todo[i].reason = String(e);
+      }
+      renderChapterPieces();
+    }
+    setProgress("#chapter-progress-bar", 1, 1);
+  } finally {
+    chapterRunning = false;
+    el("#chapter-progress").classList.add("hidden");
+    renderChapterPieces();
+  }
+  const marked = chapterPieces.filter((p) => p.status === "bad" || p.status === "warn").length;
+  if (chapterStopRequested) showToast(t("Chapter stopped: press ▶ to go on"), "warning");
+  else if (failed > 0 || marked > 0) showToast(`${t("Chapter voiced")} · ${t("to check")}: ${marked}`, "warning");
+  else showToast(t("Chapter voiced"));
+}
+
+async function stopChapter(): Promise<void> {
+  if (!chapterRunning) return;
+  chapterStopRequested = true;
+  await invoke("drama_cancel").catch(() => {});
+}
+
+async function redoChapterPiece(piece: ChapterPieceState): Promise<void> {
+  if (chapterRunning) return;
+  if (!(await ensureDramaLoaded())) return;
+  chapterRunning = true;
+  chapterStopRequested = false;
+  try {
+    await voiceChapterPiece(piece);
+  } catch (e) {
+    piece.status = "bad";
+    piece.reason = String(e);
+  } finally {
+    chapterRunning = false;
+    renderChapterPieces();
+  }
+}
+
+function showChapterResult(result: GenerationResult): void {
+  chapterResult = result;
+  void base64ToBlobAsync(result.wavBase64, "audio/wav").then((blob) => {
+    if (chapterAudioUrl) URL.revokeObjectURL(chapterAudioUrl);
+    chapterAudioUrl = URL.createObjectURL(blob);
+    const audio = el<HTMLAudioElement>("#chapter-audio");
+    audio.src = chapterAudioUrl;
+    audio.load();
+  });
+  el("#chapter-output-info").textContent = `${formatTime(resultSeconds(result))} · ${result.sampleRate} ${t("Hz")}`;
+  el("#chapter-output").classList.remove("hidden");
+}
+
+async function joinChapter(): Promise<void> {
+  const missing = chapterPieces.filter((p) => !p.result).length;
+  if (missing > 0) {
+    showToast(`${t("Not all pieces are voiced")}: ${missing}`, "warning");
+    return;
+  }
+  const settings = readChapterSettings();
+  const button = el<HTMLButtonElement>("#chapter-join");
+  button.disabled = true;
+  try {
+    await nextFrame();
+    const takes: GenerationResult[] = [];
+    for (const piece of chapterPieces) {
+      takes.push(settings.level ? await levelSceneTake(piece.result!, true) : piece.result!);
+    }
+    const pcms = takes.map((take) => parseWavPcm(take.wavBase64));
+    const rate = pcms[0].sampleRate;
+    const channels = pcms[0].channels;
+    const pauseAfter = chapterPieces.map((piece, i) => {
+      if (i === chapterPieces.length - 1) return 0;
+      const seconds = piece.kind === "dialogue" ? settings.pauseDialogue : piece.paragraphEnd ? settings.pauseParagraph : settings.pauseSentence;
+      return Math.round(seconds * rate) * channels;
+    });
+    const total = pcms.reduce((sum, p, i) => sum + p.samples.length + pauseAfter[i], 0);
+    const samples = new Int16Array(total);
+    let offset = 0;
+    pcms.forEach((pcm, i) => {
+      samples.set(pcm.samples, offset);
+      offset += pcm.samples.length + pauseAfter[i];
+    });
+    showChapterResult(pcmToResult({ sampleRate: rate, channels, samples }));
+    showToast(t("Chapter joined"));
+  } catch (e) {
+    showToast(`${t("Could not join")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initChapter(): void {
+  loadChapterSettings();
+  refreshChapterVoiceOptions();
+  for (const id of ["#chapter-text", "#chapter-voice", "#chapter-use-characters", "#chapter-max-chars", "#chapter-check", "#chapter-retries", "#chapter-pause-paragraph", "#chapter-pause-sentence", "#chapter-pause-dialogue", "#chapter-level"]) {
+    el(id).addEventListener("change", saveChapterSettings);
+  }
+  el("#chapter-split").addEventListener("click", () => {
+    if (chapterPieces.some((p) => p.result)) {
+      void askChoice(t("Cut into pieces"), t("The voiced pieces will be dropped and the chapter cut again. Go on?"), [
+        { value: "cancel", label: t("Cancel") },
+        { value: "go", label: t("Cut again"), primary: true },
+      ]).then((answer) => {
+        if (answer === "go") splitChapterIntoPieces();
+      });
+    } else {
+      splitChapterIntoPieces();
+    }
+  });
+  el("#chapter-run").addEventListener("click", () => void runChapter(false));
+  el("#chapter-redo-bad").addEventListener("click", () => void runChapter(true));
+  el("#chapter-stop").addEventListener("click", () => void stopChapter());
+  el("#chapter-join").addEventListener("click", () => void joinChapter());
+
+  const list = el<HTMLElement>("#chapter-pieces");
+  list.addEventListener("input", (event) => {
+    const area = event.target as HTMLTextAreaElement;
+    const piece = chapterPieces.find((p) => p.id === area.closest<HTMLElement>(".chapter-piece")?.dataset.id);
+    if (!piece) return;
+    piece.text = area.value;
+    if (piece.result && !piece.stale) {
+      piece.stale = true;
+      const row = area.closest<HTMLElement>(".chapter-piece")!;
+      row.classList.add("stale");
+    }
+  });
+  list.addEventListener("change", () => renderChapterPieces());
+  list.addEventListener("click", async (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!button) return;
+    const piece = chapterPieces.find((p) => p.id === button.closest<HTMLElement>(".chapter-piece")?.dataset.id);
+    if (!piece) return;
+    if (button.dataset.action === "redo") {
+      void redoChapterPiece(piece);
+    } else if (button.dataset.action === "edit" && piece.result) {
+      editAudio(`${t("Piece")} ${chapterPieces.indexOf(piece) + 1}`, piece.result.wavBase64, (edited) => {
+        const seconds = edited.sampleCount / edited.channels / edited.sampleRate;
+        piece.result = { ...piece.result!, ...edited, seconds };
+        chapterResult = null;
+        renderChapterPieces();
+      });
+    } else if (button.dataset.action === "play" && piece.result) {
+      chapterPiecePlayer.pause();
+      if (chapterPlayingId === piece.id) {
+        chapterPlayingId = "";
+        renderChapterPieces();
+        return;
+      }
+      if (chapterPiecePlayerUrl) URL.revokeObjectURL(chapterPiecePlayerUrl);
+      chapterPiecePlayerUrl = URL.createObjectURL(await base64ToBlobAsync(piece.result.wavBase64, "audio/wav"));
+      chapterPiecePlayer.src = chapterPiecePlayerUrl;
+      chapterPiecePlayer.volume = audioPlayer.volume;
+      chapterPlayingId = piece.id;
+      chapterPiecePlayer.onended = () => {
+        chapterPlayingId = "";
+        renderChapterPieces();
+      };
+      renderChapterPieces();
+      await chapterPiecePlayer.play().catch(() => {
+        chapterPlayingId = "";
+        renderChapterPieces();
+      });
+    }
+  });
+
+  el("#chapter-edit").addEventListener("click", () => {
+    if (chapterResult) editAudio(t("Chapter"), chapterResult.wavBase64, (edited) => showChapterResult(edited));
+  });
+  el("#chapter-save-wav").addEventListener("click", () => {
+    if (chapterResult) void saveResultToFile(chapterResult, "chapter", "wav");
+  });
+  el("#chapter-save-mp3").addEventListener("click", () => {
+    if (chapterResult) void saveResultToFile(chapterResult, "chapter", "mp3");
+  });
+  el("#chapter-to-montage").addEventListener("click", () => {
+    if (chapterResult) addMontageClip(t("Chapter"), chapterResult, "chapter");
+  });
+}
+
 function initMontage(): void {
   try {
     el<HTMLInputElement>("#montage-normalize").checked = localStorage.getItem(MONTAGE_NORMALIZE_STORAGE_KEY) !== "false";
@@ -8803,6 +9311,7 @@ async function main(): Promise<void> {
   initMontage();
   initSpeakerExtras();
   initVoiceMixAndLock();
+  initChapter();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
