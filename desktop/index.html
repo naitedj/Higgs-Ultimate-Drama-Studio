@@ -423,6 +423,12 @@
                 <div class="section-head">
                   <h3>Script</h3>
                 </div>
+                <div class="scene-script-tools">
+                  <button id="scene-markup-book" class="compact-button primary" type="button" title="Paste a book passage as it is, with dashes, and the program sets who says what">✨ Mark up book text</button>
+                  <button id="scene-markup-undo" class="compact-button hidden" type="button">↶ Undo markup</button>
+                </div>
+                <div id="scene-speaker-bar" class="scene-speaker-bar"></div>
+                <p class="input-hint scene-speaker-hint">Put the cursor in a line (or select several) and press a character, or Alt+its number: the line gets that speaker. Click a reply in the preview below to switch its speaker.</p>
                 <div class="drama-remarks" data-target="#scene-script"></div>
                 <textarea id="scene-script" class="text-area" rows="10" spellcheck="false"
                   placeholder="Narrator: It was a quiet evening.&#10;Masha: [whispers] Are you asleep?&#10;Petya: No."></textarea>

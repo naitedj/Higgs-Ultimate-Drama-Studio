@@ -69,6 +69,10 @@ import {
   parseScene,
   saveDramaScene,
   sceneNameCandidates,
+  bookNameCandidates,
+  findNarrator,
+  markupBookText,
+  setScriptLineSpeaker,
   sceneParts,
   sceneText,
   shortHash,
@@ -5550,6 +5554,113 @@ function refreshSceneVoiceOptions(): void {
   }
 }
 
+// ─── Assigning speakers to script lines ───
+
+/** One button per character above the script: gives the current line(s) that speaker. */
+function renderSceneSpeakerBar(): void {
+  const bar = el<HTMLElement>("#scene-speaker-bar");
+  bar.innerHTML = "";
+  dramaScene.characters.forEach((character, index) => {
+    if (!character.name.trim()) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "compact-button scene-speaker-button";
+    button.style.setProperty("--speaker-color", sceneColor(index));
+    button.title = index <= 9 ? `Alt+${index}` : "";
+    button.innerHTML = `<span class="scene-speaker-number">${index}</span>${escapeHtml(character.name.trim())}`;
+    // Keep the script's cursor: a mousedown on the button would take the focus away.
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => assignSpeakerToScriptLines(index));
+    bar.appendChild(button);
+  });
+}
+
+function setSceneScript(script: string): void {
+  dramaScene.script = script;
+  el<HTMLTextAreaElement>("#scene-script").value = script;
+  persistDramaScene();
+  renderScenePreview();
+}
+
+/**
+ * Gives the line the cursor is in, or every line of the selection, the speaker
+ * `character`, then moves the cursor to the start of the next line so the next
+ * reply can be marked right away.
+ */
+function assignSpeakerToScriptLines(character: number): void {
+  const textarea = el<HTMLTextAreaElement>("#scene-script");
+  if (!dramaScene.characters[character]?.name.trim()) return;
+  const value = textarea.value;
+  const lineOf = (pos: number) => value.slice(0, pos).split("\n").length - 1;
+  const first = lineOf(textarea.selectionStart ?? 0);
+  let last = lineOf(textarea.selectionEnd ?? 0);
+  // A selection that ends at the very start of a line does not take that line.
+  if (last > first && (textarea.selectionEnd ?? 0) > 0 && value[(textarea.selectionEnd ?? 1) - 1] === "\n") last -= 1;
+  let script = value.replace(/\r\n/g, "\n");
+  const lines = script.split("\n");
+  for (let i = first; i <= last; i++) {
+    if (!lines[i]?.trim()) continue;
+    script = setScriptLineSpeaker(script, i, dramaScene.characters, character);
+  }
+  setSceneScript(script);
+  const after = script.split("\n");
+  const nextLine = Math.min(after.length - 1, last + 1);
+  const cursor = after.slice(0, nextLine).reduce((sum, line) => sum + line.length + 1, 0);
+  textarea.focus();
+  textarea.setSelectionRange(cursor, cursor);
+}
+
+/** Paste a book passage, get "Name: text" lines: narrator, replies, author's words. */
+let sceneMarkupUndo: { script: string; characters: DramaCharacter[] } | null = null;
+
+function markupSceneBookText(): void {
+  const text = el<HTMLTextAreaElement>("#scene-script").value;
+  if (!text.trim()) {
+    showToast(t("Paste a book passage into the script first"), "warning");
+    return;
+  }
+  sceneMarkupUndo = { script: text, characters: dramaScene.characters.map((c) => ({ ...c })) };
+  const characters = dramaScene.characters;
+  let narrator = findNarrator(characters);
+  if (narrator < 0 && characters.length < DRAMA_MAX_SPEAKERS) {
+    characters.push(newDramaCharacter(t("Narrator")));
+    narrator = characters.length - 1;
+  }
+  const added: string[] = [];
+  for (const name of bookNameCandidates(text, characters)) {
+    if (characters.length >= DRAMA_MAX_SPEAKERS) break;
+    characters.push(newDramaCharacter(name));
+    added.push(name);
+  }
+  // Replies need someone to say them besides the narrator.
+  for (let n = 1; characters.filter((_, i) => i !== narrator).length < 2 && characters.length < DRAMA_MAX_SPEAKERS; n++) {
+    const name = `${t("Character")} ${n}`;
+    if (characters.some((c) => c.name === name)) continue;
+    characters.push(newDramaCharacter(name));
+    added.push(name);
+  }
+  const result = markupBookText(text, characters, narrator);
+  persistDramaScene();
+  renderSceneCharacters();
+  setSceneScript(result.script);
+  el("#scene-markup-undo").classList.remove("hidden");
+  const parts = [`${t("Marked up")}: ${result.replies} ${t("replies")}`];
+  if (added.length > 0) parts.push(`${t("characters added")}: ${added.join(", ")}`);
+  if (result.guessed > 0) parts.push(`${t("speaker guessed for")} ${result.guessed}: ${t("check them")}`);
+  showToast(parts.join(" · "), result.guessed > 0 ? "warning" : "success");
+}
+
+function undoSceneMarkup(): void {
+  const saved = sceneMarkupUndo;
+  if (!saved) return;
+  sceneMarkupUndo = null;
+  dramaScene.characters = saved.characters;
+  persistDramaScene();
+  renderSceneCharacters();
+  setSceneScript(saved.script);
+  el("#scene-markup-undo").classList.add("hidden");
+}
+
 function renderSceneCharacters(): void {
   const list = el<HTMLElement>("#scene-characters");
   list.innerHTML = "";
@@ -5573,6 +5684,7 @@ function renderSceneCharacters(): void {
     list.appendChild(row);
   });
   el<HTMLButtonElement>("#scene-add-character").disabled = dramaScene.characters.length >= DRAMA_MAX_SPEAKERS;
+  renderSceneSpeakerBar();
 }
 
 function renderScenePreview(): void {
@@ -5588,7 +5700,7 @@ function renderScenePreview(): void {
     const character = dramaScene.characters[reply.character];
     const name = character?.name || "?";
     const text = reply.text.length > 160 ? `${reply.text.slice(0, 160)}…` : reply.text;
-    parts.push(`<div class="scene-preview-line"><strong style="color:${sceneColor(reply.character)}">${escapeHtml(name)}</strong><span>${escapeHtml(text)}</span></div>`);
+    parts.push(`<div class="scene-preview-line" data-line="${reply.line - 1}" data-character="${reply.character}" title="${escapeHtml(t("Click to switch the speaker of this reply"))}"><strong style="color:${sceneColor(reply.character)}">${escapeHtml(name)}</strong><span>${escapeHtml(text)}</span></div>`);
   }
   if (replies.length > 0) {
     const chars = replies.reduce((sum, r) => sum + r.text.length, 0);
@@ -5826,7 +5938,10 @@ function initDramaScene(): void {
     const index = Number(input.closest<HTMLElement>(".scene-character-row")?.dataset.index);
     const character = dramaScene.characters[index];
     if (!character) return;
-    if (input.dataset.field === "name") character.name = input.value;
+    if (input.dataset.field === "name") {
+      character.name = input.value;
+      renderSceneSpeakerBar();
+    }
     if (input.dataset.field === "description") character.description = input.value;
     if (input.dataset.field === "voice") {
       character.voice = input.value;
@@ -5867,6 +5982,28 @@ function initDramaScene(): void {
     persistDramaScene();
     renderScenePreview();
   });
+  // Alt+number: the current line(s) get that character (Alt+0 … Alt+9).
+  el<HTMLTextAreaElement>("#scene-script").addEventListener("keydown", (event) => {
+    if (!event.altKey || event.ctrlKey || event.metaKey) return;
+    const match = /^(?:Digit|Numpad)(\d)$/.exec(event.code);
+    if (!match) return;
+    const index = Number(match[1]);
+    if (index >= dramaScene.characters.length) return;
+    event.preventDefault();
+    assignSpeakerToScriptLines(index);
+  });
+  // A click on a reply in the preview gives it the next character.
+  el("#scene-preview").addEventListener("click", (event) => {
+    const line = (event.target as HTMLElement).closest<HTMLElement>(".scene-preview-line");
+    if (!line || dramaScene.characters.length === 0) return;
+    const named = dramaScene.characters.map((c, i) => (c.name.trim() ? i : -1)).filter((i) => i >= 0);
+    if (named.length === 0) return;
+    const current = Number(line.dataset.character);
+    const next = named[(named.indexOf(current) + 1) % named.length];
+    setSceneScript(setScriptLineSpeaker(dramaScene.script.replace(/\r\n/g, "\n"), Number(line.dataset.line), dramaScene.characters, next));
+  });
+  el("#scene-markup-book").addEventListener("click", markupSceneBookText);
+  el("#scene-markup-undo").addEventListener("click", undoSceneMarkup);
   el("#scene-mode-scene").addEventListener("click", () => {
     dramaScene.mode = "scene";
     persistDramaScene();

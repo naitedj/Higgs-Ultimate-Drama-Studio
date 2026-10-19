@@ -738,6 +738,21 @@ export const RU: Record<string, string> = {
     "уже есть запись. Сделать из новой записи новый голос или заменить запись в этой карточке?",
   "Replace in": "Заменить в",
   "New voice": "Новый голос",
+  // Scene: marking up speakers
+  "✨ Mark up book text": "✨ Разметить текст книги",
+  "Paste a book passage as it is, with dashes, and the program sets who says what":
+    "Вставьте отрывок книги как есть, с тире, — программа сама расставит, кто что говорит",
+  "↶ Undo markup": "↶ Отменить разметку",
+  "Put the cursor in a line (or select several) and press a character, or Alt+its number: the line gets that speaker. Click a reply in the preview below to switch its speaker.":
+    "Поставьте курсор в строку (или выделите несколько) и нажмите персонажа или Alt+его номер — строка достанется ему. Щелчок по реплике в разборе ниже переключает её персонажа.",
+  "Click to switch the speaker of this reply": "Щёлкните, чтобы сменить персонажа этой реплики",
+  "Paste a book passage into the script first": "Сначала вставьте отрывок книги в сценарий",
+  "Narrator": "Рассказчик",
+  "Character": "Персонаж",
+  "Marked up": "Размечено",
+  "characters added": "добавлены персонажи",
+  "speaker guessed for": "говорящий угадан у",
+  "check them": "проверьте их",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",
