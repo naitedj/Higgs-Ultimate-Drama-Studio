@@ -1628,6 +1628,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "thiserror 2.0.18",
  "ureq",
+ "world-rs",
  "zip",
 ]
 
@@ -5941,6 +5942,17 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "world-rs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "294e6fd4bc49ee58bfa2f290a3bdf9f2214430708507ce083073f1b665adba0e"
+dependencies = [
+ "num-complex",
+ "realfft",
+ "rustfft",
+]
 
 [[package]]
 name = "wrapcenum-derive"

@@ -8708,13 +8708,14 @@ function isHiddenVoice(name: string): boolean {
   return name.startsWith(SCENE_VOICE_PREFIX) || name.startsWith(STUDIO_VOICE_PREFIX);
 }
 
-type StudioSettings = { source: string; pitch: number; tempo: number; style: string; phrase: string };
+type StudioSettings = { source: string; pitch: number; tempo: number; age: number; style: string; phrase: string };
 
 function readStudioSettings(): StudioSettings {
   return {
     source: el<HTMLSelectElement>("#studio-source").value,
     pitch: parseFloat(el<HTMLInputElement>("#studio-pitch").value) || 0,
     tempo: parseFloat(el<HTMLInputElement>("#studio-tempo").value) || 1,
+    age: parseFloat(el<HTMLInputElement>("#studio-age").value) || 0,
     style: el<HTMLInputElement>("#studio-style").value,
     phrase: el<HTMLTextAreaElement>("#studio-phrase").value,
   };
@@ -8728,6 +8729,7 @@ function renderStudioLabels(): void {
   const s = readStudioSettings();
   el("#studio-val-pitch").textContent = s.pitch > 0 ? `+${s.pitch}` : String(s.pitch);
   el("#studio-val-tempo").textContent = `${s.tempo.toFixed(2)}×`;
+  el("#studio-val-age").textContent = s.age > 0 ? `+${s.age}` : String(s.age);
 }
 
 function renderStudioSources(): void {
@@ -8758,6 +8760,8 @@ function studioChangeLabel(s: StudioSettings): string {
   if (s.pitch < 0) parts.push(`${t("lower by")} ${-s.pitch}`);
   if (s.tempo < 0.995) parts.push(t("slower"));
   if (s.tempo > 1.005) parts.push(t("faster"));
+  if (s.age > 0) parts.push(t("younger"));
+  if (s.age < 0) parts.push(t("older"));
   return parts.join(", ");
 }
 
@@ -8767,15 +8771,31 @@ function studioPersona(): SpeakerPersona {
   return persona;
 }
 
+/** Age slider (−100…100) → formant ratio: +100 = formants 15 % higher (younger), −100 = 15 % lower. */
+function studioFormantRatio(age: number): number {
+  return 1 + (Math.max(-100, Math.min(100, age)) / 100) * 0.15;
+}
+
 /** The voice's recordings changed by the settings, written to temporary WAV files. */
 async function studioRecordings(persona: SpeakerPersona, s: StudioSettings, onlyMain = false): Promise<{ key: string; recordings: Array<{ path: string; name: string; text: string }> }> {
-  const key = shortHash(`${persona.id}|${persona.updatedAt}|${s.pitch}|${s.tempo}`);
+  const key = shortHash(`${persona.id}|${persona.updatedAt}|${s.pitch}|${s.tempo}|${s.age}`);
   const sources = personaRecordings(persona).slice(0, onlyMain ? 1 : undefined);
   const recordings: Array<{ path: string; name: string; text: string }> = [];
   for (let i = 0; i < sources.length; i++) {
     const source = sources[i];
     const audio = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: source.path });
-    const changed = shiftPitchAndTempo(parseWavPcm(audio.wavBase64), s.pitch, s.tempo);
+    let changed: WavPcm;
+    if (Math.abs(s.age) > 0.5) {
+      // Age needs the formants moved apart from the pitch: the WORLD vocoder does both.
+      const morphed = await invoke<string>("voice_morph_wav", {
+        wavBase64: audio.wavBase64,
+        semitones: s.pitch,
+        formantRatio: studioFormantRatio(s.age),
+      });
+      changed = timeStretch(parseWavPcm(morphed), s.tempo);
+    } else {
+      changed = shiftPitchAndTempo(parseWavPcm(audio.wavBase64), s.pitch, s.tempo);
+    }
     const path = await invoke<string>("drama_temp_path", { name: `studio_${key}_${i}.wav` });
     await invoke("save_binary_file", { path, base64Data: pcmToResult(changed).wavBase64 });
     recordings.push({ path, name: source.name, text: source.text });
@@ -8915,6 +8935,7 @@ function initVoiceStudio(): void {
     const saved = JSON.parse(localStorage.getItem(STUDIO_STORAGE_KEY) || "{}") as Partial<StudioSettings>;
     if (typeof saved.pitch === "number") el<HTMLInputElement>("#studio-pitch").value = String(saved.pitch);
     if (typeof saved.tempo === "number") el<HTMLInputElement>("#studio-tempo").value = String(saved.tempo);
+    if (typeof saved.age === "number") el<HTMLInputElement>("#studio-age").value = String(saved.age);
     if (typeof saved.style === "string") el<HTMLInputElement>("#studio-style").value = saved.style;
     if (typeof saved.phrase === "string" && saved.phrase.trim()) el<HTMLTextAreaElement>("#studio-phrase").value = saved.phrase;
     if (typeof saved.source === "string") el<HTMLSelectElement>("#studio-source").dataset.saved = saved.source;
@@ -8923,7 +8944,7 @@ function initVoiceStudio(): void {
   }
   renderStudioSources();
   renderStudioLabels();
-  for (const id of ["#studio-pitch", "#studio-tempo"]) {
+  for (const id of ["#studio-pitch", "#studio-tempo", "#studio-age"]) {
     el(id).addEventListener("input", () => {
       renderStudioLabels();
       saveStudioSettings();

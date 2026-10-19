@@ -18,6 +18,8 @@ tauri-build = { version = "2", features = [] }
 # getUserMedia is flaky). Same crates the Tauri recorder plugins use.
 cpal = "0.15"
 hound = "3.5"
+# WORLD vocoder (pure Rust, BSD-3): pitch and formants apart, for the Voice Studio "age".
+world-rs = "0.1"
 # EBU R128 / LUFS loudness measurement to level-match multi-speaker segments and
 # continuation clips to a common loudness (references come at different volumes).
 ebur128 = "0.1"
@@ -44,3 +46,11 @@ tauri-plugin-dialog = "2"
 thiserror = "2"
 ureq = { version = "3", features = ["json"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# The WORLD vocoder is heavy maths: keep it optimised in dev builds too (tauri dev).
+[profile.dev.package.world-rs]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3

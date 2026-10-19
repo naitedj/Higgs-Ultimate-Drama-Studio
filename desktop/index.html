@@ -1025,6 +1025,12 @@
                 <input type="range" id="studio-tempo" min="0.75" max="1.3" step="0.05" value="1" />
                 <span class="slider-value" id="studio-val-tempo">1.00×</span>
               </label>
+              <label class="slider-label">
+                <span class="slider-name">Age</span>
+                <span class="tip" tabindex="0" data-tip="Moves the formants (the size of the voice) without changing the pitch: to the right younger and smaller, to the left older and bigger. ±30–50 sounds natural.">?</span>
+                <input type="range" id="studio-age" min="-100" max="100" step="10" value="0" />
+                <span class="slider-value" id="studio-val-age">0</span>
+              </label>
               <label class="chapter-field studio-style-field" title="How the voice speaks in the trial take: pick or type a direction in English. Emotion is changed here, not in the recording.">
                 <span>Manner</span>
                 <input id="studio-style" class="text-input" type="text" list="drama-style-presets" spellcheck="false" placeholder="emotional, expressive" />

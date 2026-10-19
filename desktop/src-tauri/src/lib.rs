@@ -9,6 +9,8 @@ pub mod parakeet;
 mod recorder;
 // pub: чтобы headless-пример drama_smoke мог проверить движок Drama 3 с настоящим speech.dll.
 pub mod speech_engine;
+// pub: чтобы headless-проверка могла переделать голос напрямую.
+pub mod voice_morph;
 // pub: чтобы headless-пример voiceclean_test мог дергать clean_voice напрямую.
 pub mod voiceclean;
 
@@ -4682,6 +4684,38 @@ fn drama_temp_path(name: String) -> Result<String, String> {
     Ok(dir.join(name).to_string_lossy().into_owned())
 }
 
+/// Студия голоса: высота тона (полутоны) и форманты («возраст») записи вокодером WORLD.
+/// Принимает и возвращает WAV в base64; результат моно 16 бит.
+#[tauri::command]
+async fn voice_morph_wav(wav_base64: String, semitones: f64, formant_ratio: f64) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let bytes = base64_decode(&wav_base64).map_err(|e| e.to_string())?;
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
+        let spec = reader.spec();
+        let channels = spec.channels.max(1) as usize;
+        let interleaved: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect(),
+            hound::SampleFormat::Int => {
+                let scale = (1i64 << (spec.bits_per_sample.max(1) - 1)) as f32;
+                reader.samples::<i32>().map(|s| s.unwrap_or(0) as f32 / scale).collect()
+            }
+        };
+        let mono: Vec<f32> = interleaved
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+            .collect();
+        let morphed = voice_morph::morph_voice(&mono, spec.sample_rate, semitones, formant_ratio)?;
+        Ok(AudioResult {
+            sample_rate: spec.sample_rate as i32,
+            channels: 1,
+            samples: morphed,
+        }
+        .encode_base64_wav())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 // ─── Проекты Drama Studio: папка с project.json и audio/*.wav ───
 
 /// Имя папки из имени проекта: буквы любого языка, цифры, пробел, - и _ остаются,
@@ -4925,6 +4959,7 @@ pub fn run() {
             drama_scene_voice_path,
             drama_temp_path,
             project_default_dir,
+            voice_morph_wav,
             project_prepare_dir,
             read_file_base64,
             project_cleanup_audio,

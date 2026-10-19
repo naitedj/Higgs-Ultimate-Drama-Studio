@@ -996,6 +996,12 @@ export const RU: Record<string, string> = {
   "Could not read the file": "Не удалось прочитать файл",
   "The voiced lines will be dropped and the subtitles read again. Go on?": "Озвученные реплики пропадут, субтитры прочитаются заново. Продолжить?",
   "Read again": "Прочитать заново",
+  // Voice Studio: age
+  "Age": "Возраст",
+  "Moves the formants (the size of the voice) without changing the pitch: to the right younger and smaller, to the left older and bigger. ±30–50 sounds natural.":
+    "Сдвигает форманты («размер» голоса), не меняя высоту: вправо — моложе и меньше, влево — старше и крупнее. Естественно звучит ±30–50.",
+  "younger": "моложе",
+  "older": "старше",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",
