@@ -944,6 +944,24 @@ export const RU: Record<string, string> = {
   "📖 Dictionary": "📖 Словарь",
   "Dictionary": "Словарь",
   "Stress marks, names and abbreviations, applied to every text": "Ударения, имена и сокращения — для всех текстов",
+  // Audiobook export
+  "📚 Audiobook export": "📚 Экспорт аудиокниги",
+  "Audiobook export": "Экспорт аудиокниги",
+  "Format": "Формат",
+  "MP3 64 kbit/s (smaller)": "MP3 64 кбит/с (компактнее)",
+  "MP3 128 kbit/s": "MP3 128 кбит/с",
+  "WAV (no compression)": "WAV (без сжатия)",
+  "Audiobook standard loudness": "Громкость по стандарту аудиокниг",
+  "−19 LUFS, peaks at most −3 dB, 0.5 s of silence at the start and 1 s at the end":
+    "−19 LUFS, пики не выше −3 дБ, 0,5 с тишины в начале и 1 с в конце",
+  "Room tone in pauses": "Фон комнаты в паузах",
+  "Very quiet noise instead of dead digital silence in pauses, as in a real recording":
+    "Очень тихий шум вместо «мёртвой» цифровой тишины в паузах, как в настоящей записи",
+  "Title": "Название",
+  "Author": "Автор",
+  "Book": "Книга",
+  "Track number": "Номер трека",
+  "💾 Export": "💾 Экспортировать",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

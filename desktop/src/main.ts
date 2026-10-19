@@ -57,6 +57,8 @@ import {
 import type { PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import { applyDictionary, DICTIONARY_STORAGE_KEY, loadDictionary, saveDictionary } from "./dictionary";
+import { AUDIOBOOK_TARGET_LUFS, audiobookFileName, id3Tag, loadAudiobookExport, masterAudiobook, saveAudiobookExport } from "./audiobook";
+import type { AudiobookExport, AudiobookFormat } from "./audiobook";
 import type { DictionaryEntry } from "./dictionary";
 import {
   DRAMA_DEFAULT_OPTIONS,
@@ -8928,6 +8930,99 @@ function initVoiceStudio(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Audiobook export: loudness to the audiobook standard, room tone, MP3 with tags.
+// ═══════════════════════════════════════════════════════════════════════════
+
+let audiobookSource: { result: GenerationResult; label: string } | null = null;
+
+function readAudiobookForm(): AudiobookExport {
+  return {
+    format: el<HTMLSelectElement>("#audiobook-format").value as AudiobookFormat,
+    standard: el<HTMLInputElement>("#audiobook-standard").checked,
+    roomTone: el<HTMLInputElement>("#audiobook-room-tone").checked,
+    title: el<HTMLInputElement>("#audiobook-tag-title").value,
+    author: el<HTMLInputElement>("#audiobook-tag-author").value,
+    book: el<HTMLInputElement>("#audiobook-tag-book").value,
+    track: el<HTMLInputElement>("#audiobook-tag-track").value,
+  };
+}
+
+function openAudiobookExport(result: GenerationResult | null, label: string): void {
+  if (!result) return;
+  audiobookSource = { result, label };
+  const saved = loadAudiobookExport();
+  el<HTMLSelectElement>("#audiobook-format").value = saved.format;
+  el<HTMLInputElement>("#audiobook-standard").checked = saved.standard;
+  el<HTMLInputElement>("#audiobook-room-tone").checked = saved.roomTone;
+  // The title follows the project; author and book stay from the last export.
+  el<HTMLInputElement>("#audiobook-tag-title").value = currentProject?.name || saved.title || label;
+  el<HTMLInputElement>("#audiobook-tag-author").value = saved.author;
+  el<HTMLInputElement>("#audiobook-tag-book").value = saved.book;
+  el<HTMLInputElement>("#audiobook-tag-track").value = saved.track;
+  el("#audiobook-source").textContent = `${label} · ${formatTime(resultSeconds(result))}`;
+  el("#audiobook-modal").classList.remove("hidden");
+}
+
+function closeAudiobookExport(): void {
+  el("#audiobook-modal").classList.add("hidden");
+}
+
+async function runAudiobookExport(): Promise<void> {
+  if (!audiobookSource) return;
+  const settings = readAudiobookForm();
+  saveAudiobookExport(settings);
+  const isWav = settings.format === "wav";
+  const path = await save({
+    defaultPath: `${audiobookFileName(settings, audiobookSource.label)}.${isWav ? "wav" : "mp3"}`,
+    filters: [isWav ? { name: "WAV Audio", extensions: ["wav"] } : { name: "MP3 Audio", extensions: ["mp3"] }],
+  });
+  if (!path) return;
+  const button = el<HTMLButtonElement>("#audiobook-save");
+  button.disabled = true;
+  try {
+    await nextFrame();
+    let wavBase64 = audiobookSource.result.wavBase64;
+    if (settings.standard) {
+      wavBase64 = await invoke<string>("normalize_wav", { wavBase64, targetLufs: AUDIOBOOK_TARGET_LUFS });
+    }
+    const mastered = masterAudiobook(parseWavPcm(wavBase64), settings);
+    const wav = pcmToResult(mastered).wavBase64;
+    let data: string;
+    if (isWav) {
+      data = wav;
+    } else {
+      const mp3 = await encodeMp3FromWav(wav, settings.format === "mp3-64" ? 64 : 128);
+      const tag = id3Tag({
+        TIT2: settings.title,
+        TPE1: settings.author,
+        TALB: settings.book,
+        TRCK: settings.track,
+        TCON: "Audiobook",
+      });
+      const bytes = new Uint8Array(tag.length + mp3.length);
+      bytes.set(tag, 0);
+      bytes.set(mp3, tag.length);
+      data = bytesToBase64(bytes);
+    }
+    await invoke("save_binary_file", { path, base64Data: data });
+    closeAudiobookExport();
+    showToast(`${t("Exported")}: ${path.split(/[/\\]/).pop()}`);
+  } catch (e) {
+    showToast(`${t("Export failed")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initAudiobookExport(): void {
+  el("#audiobook-close").addEventListener("click", closeAudiobookExport);
+  el("#audiobook-cancel").addEventListener("click", closeAudiobookExport);
+  el("#audiobook-save").addEventListener("click", () => void runAudiobookExport());
+  el("#chapter-audiobook").addEventListener("click", () => openAudiobookExport(chapterResult, t("Chapter")));
+  el("#montage-audiobook").addEventListener("click", () => openAudiobookExport(montageResult, t("Montage")));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Pronunciation dictionary: applied to every text sent to Drama 3.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -10147,6 +10242,7 @@ async function main(): Promise<void> {
   initVoiceStudio();
   initProjects();
   initDictionary();
+  initAudiobookExport();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {

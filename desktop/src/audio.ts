@@ -161,10 +161,10 @@ export function concatenateWavResults(results: GenerationResult[], pauseSeconds 
   };
 }
 
-export async function encodeMp3FromWav(base64: string): Promise<Uint8Array> {
+export async function encodeMp3FromWav(base64: string, kbps = 128): Promise<Uint8Array> {
   const lamejs = await loadLameJs();
   const wav = parseWavPcm(base64);
-  const encoder = new lamejs.Mp3Encoder(wav.channels, wav.sampleRate, 128);
+  const encoder = new lamejs.Mp3Encoder(wav.channels, wav.sampleRate, kbps);
   const chunks: Int8Array[] = [];
   const frameSize = 1152;
 

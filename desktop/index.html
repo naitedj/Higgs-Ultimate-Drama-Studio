@@ -937,6 +937,7 @@
                 <button id="chapter-save-wav" class="compact-button primary" type="button">Save WAV</button>
                 <button id="chapter-save-mp3" class="compact-button" type="button">Save MP3</button>
                 <button id="chapter-to-montage" class="compact-button" type="button">+ To montage</button>
+                <button id="chapter-audiobook" class="compact-button" type="button">📚 Audiobook export</button>
               </div>
             </div>
           </div>
@@ -1018,6 +1019,7 @@
                 <button id="montage-save-wav" class="compact-button primary" type="button">Save WAV</button>
                 <button id="montage-save-mp3" class="compact-button" type="button">Save MP3</button>
                 <button id="montage-to-history" class="compact-button" type="button">To history</button>
+                <button id="montage-audiobook" class="compact-button" type="button">📚 Audiobook export</button>
               </div>
             </div>
           </div>
@@ -1480,6 +1482,51 @@ Third phrase."></textarea>
           <div class="modal-actions">
             <button id="audio-editor-cancel" class="compact-button" type="button">Cancel</button>
             <button id="audio-editor-save" class="compact-button primary" type="button">Save</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ═══════════ Audiobook export ═══════════ -->
+      <div id="audiobook-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="audiobook-title">
+        <section class="modal-panel mix-panel">
+          <div class="modal-head">
+            <div>
+              <h3 id="audiobook-title">Audiobook export</h3>
+              <span id="audiobook-source" class="api-status-text"></span>
+            </div>
+            <button id="audiobook-close" class="popover-close" type="button" aria-label="Close">✕</button>
+          </div>
+          <div class="mix-body">
+            <label class="chapter-field">
+              <span>Format</span>
+              <select id="audiobook-format" class="select-input">
+                <option value="mp3-128">MP3 128 kbit/s</option>
+                <option value="mp3-64">MP3 64 kbit/s (smaller)</option>
+                <option value="wav">WAV (no compression)</option>
+              </select>
+            </label>
+            <label class="inline-toggle" title="−19 LUFS, peaks at most −3 dB, 0.5 s of silence at the start and 1 s at the end">
+              <span>Audiobook standard loudness</span>
+              <span class="toggle-switch"><input type="checkbox" id="audiobook-standard" checked /><span class="toggle-slider"></span></span>
+            </label>
+            <label class="inline-toggle" title="Very quiet noise instead of dead digital silence in pauses, as in a real recording">
+              <span>Room tone in pauses</span>
+              <span class="toggle-switch"><input type="checkbox" id="audiobook-room-tone" checked /><span class="toggle-slider"></span></span>
+            </label>
+            <div class="audiobook-tags">
+              <label class="field-label" for="audiobook-tag-title">Title</label>
+              <input id="audiobook-tag-title" class="text-input" type="text" />
+              <label class="field-label" for="audiobook-tag-author">Author</label>
+              <input id="audiobook-tag-author" class="text-input" type="text" />
+              <label class="field-label" for="audiobook-tag-book">Book</label>
+              <input id="audiobook-tag-book" class="text-input" type="text" />
+              <label class="field-label" for="audiobook-tag-track">Track number</label>
+              <input id="audiobook-tag-track" class="text-input" type="text" inputmode="numeric" />
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button id="audiobook-cancel" class="compact-button" type="button">Cancel</button>
+            <button id="audiobook-save" class="compact-button primary" type="button">💾 Export</button>
           </div>
         </section>
       </div>
