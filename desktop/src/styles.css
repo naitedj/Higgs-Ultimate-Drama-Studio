@@ -2391,3 +2391,13 @@ input[type="range"]::-moz-range-thumb {
 .speaker-extra-name { color: var(--text-secondary); flex: 1; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .speaker-extra-head .icon-button.danger:hover { border-color: #ef4444; color: #ef4444; }
 #drama-options-stable { margin-right: 6px; }
+.text-prompt-body { padding: 0 16px 12px; }
+.text-prompt-body .text-input { width: 100%; }
+#text-prompt-modal, #mix-modal { z-index: 1150; }
+.mix-panel { max-width: 640px; width: min(640px, 92vw); }
+.mix-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 16px 12px; }
+.mix-row { align-items: center; display: grid; gap: 8px; grid-template-columns: 22px 1fr auto; }
+.mix-label { color: var(--text-muted); font-weight: 800; text-align: center; }
+.mix-count { align-items: center; display: flex; gap: 6px; }
+.mix-count span { color: var(--text-secondary); font-size: 12px; }
+.mix-count .select-input { width: 64px; }

@@ -4499,6 +4499,8 @@ async function runGenerationJob(job: GenerationJob): Promise<void> {
     }
     setGenerationElapsedLabel();
     lastResult = result;
+    // A Drama 3 TTS take can be locked as a voice: keep what it says.
+    lastResultSpokenText = job.engine === "drama" && job.payload.kind === "tts" ? job.payload.text : null;
     showOutput(result, job.mode);
     setGenerationElapsedLabel();
     addHistory(job.mode, job.label || "Untitled", result);
@@ -4950,6 +4952,221 @@ function initSpeakerExtras(): void {
       }
     }
   });
+}
+
+// ─── Mixing two voices and locking a take as a voice ───
+
+/** Text of the take last shown as the result (Drama 3 TTS); null when unknown. */
+let lastResultSpokenText: string | null = null;
+
+/** The words of a Drama 3 text: speaker tags and [directions] removed. */
+function spokenWords(text: string): string {
+  return text.replace(/<\|[^|]*\|>/g, " ").replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** A dialog with one line of input; resolves to the text, or null when cancelled. */
+function askText(title: string, message: string, value: string): Promise<string | null> {
+  const modal = el<HTMLElement>("#text-prompt-modal");
+  const input = el<HTMLInputElement>("#text-prompt-input");
+  el("#text-prompt-title").textContent = title;
+  el("#text-prompt-message").textContent = message;
+  input.value = value;
+  return new Promise((resolve) => {
+    const finish = (result: string | null) => {
+      modal.classList.add("hidden");
+      el("#text-prompt-ok").removeEventListener("click", ok);
+      el("#text-prompt-cancel").removeEventListener("click", cancel);
+      input.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const ok = () => finish(input.value.trim() || null);
+    const cancel = () => finish(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Enter") ok();
+      if (event.key === "Escape") cancel();
+    };
+    el("#text-prompt-ok").addEventListener("click", ok);
+    el("#text-prompt-cancel").addEventListener("click", cancel);
+    input.addEventListener("keydown", onKey);
+    modal.classList.remove("hidden");
+    input.focus();
+    input.select();
+  });
+}
+
+/**
+ * Turns a generated take into a Speaker Gallery voice with its Drama 3 voice file:
+ * the take is the reference, its words (recognised by Parakeet when it is there,
+ * else the text without directions) the transcript. Returns the new card, or null.
+ */
+async function lockVoiceFromTake(result: GenerationResult, text: string, defaultName: string): Promise<SpeakerPersona | null> {
+  const name = await askText(t("🔒 Lock voice"), t("The take becomes a voice in the Speaker Gallery. Its name:"), defaultName);
+  if (!name) return null;
+  const persona = createBlankPersona();
+  persona.name = name;
+  try {
+    const folder = await invoke<{ path: string }>("speaker_drama_voice_path", { speakerId: persona.id, speakerName: name });
+    const takePath = folder.path.replace(/[^\\/]+$/, "take.wav");
+    await invoke("save_binary_file", { path: takePath, base64Data: result.wavBase64 });
+    // At most 30 s, as any reference; no voice cleaning: a generated take is clean.
+    const prepared = await prepareReferenceAudioFile(takePath, "take.wav", false);
+    const stored = await storeSpeakerAsset(persona, prepared.path, "audio");
+    persona.refPath = stored.path;
+    persona.refName = t("Locked take");
+    const heard = await tryAutoTranscribeSilently(stored.path);
+    persona.refText = heard || spokenWords(text);
+    if (!heard && prepared.cropped) {
+      showToast(t("The take was longer than 30 s and was cut: check the transcript in the Speaker Gallery"), "warning");
+    }
+    persona.notes = `${t("Locked from a take")}: ${spokenWords(text).slice(0, 120)}`;
+    speakerPersonas.push(persona);
+    saveSpeakerPersonas();
+    await makeDramaVoiceForPersona(persona);
+    return persona.dramaVoicePath ? persona : null;
+  } catch (e) {
+    showToast(`${t("Could not lock the voice")}: ${e}`, "error");
+    return null;
+  }
+}
+
+function mixablePersonas(): SpeakerPersona[] {
+  return speakerPersonas.filter((p) => p.refPath && p.refText.trim());
+}
+
+/** A persona's recordings that have a transcript: the main one, then the extra ones. */
+function personaRecordings(persona: SpeakerPersona): Array<{ path: string; name: string; text: string }> {
+  return [
+    { path: persona.refPath, name: persona.refName || "reference", text: persona.refText },
+    ...(persona.extraRefs || []),
+  ].filter((r) => r.path && r.text.trim());
+}
+
+let mixNameEdited = false;
+
+function renderMixCounts(): void {
+  for (const side of ["a", "b"]) {
+    const persona = findPersona(el<HTMLSelectElement>(`#mix-${side}`).value);
+    const count = el<HTMLSelectElement>(`#mix-${side}-count`);
+    const n = persona ? personaRecordings(persona).length : 0;
+    const current = Number(count.value) || 1;
+    count.innerHTML = Array.from({ length: Math.max(1, n) }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("");
+    count.value = String(Math.min(current, Math.max(1, n)));
+  }
+  if (!mixNameEdited) {
+    const a = findPersona(el<HTMLSelectElement>("#mix-a").value)?.name || "";
+    const b = findPersona(el<HTMLSelectElement>("#mix-b").value)?.name || "";
+    el<HTMLInputElement>("#mix-name").value = a && b ? `${a} + ${b}` : "";
+  }
+}
+
+function openMixModal(): void {
+  const personas = mixablePersonas();
+  if (personas.length < 2) {
+    showToast(t("Mixing needs two voices with a recording and its transcript"), "warning");
+    return;
+  }
+  const options = personas.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  el("#mix-a").innerHTML = options;
+  el("#mix-b").innerHTML = options;
+  const selected = selectedGalleryPersona();
+  const first = selected && personas.includes(selected) ? selected : personas[0];
+  el<HTMLSelectElement>("#mix-a").value = first.id;
+  el<HTMLSelectElement>("#mix-b").value = (personas.find((p) => p !== first) || personas[1]).id;
+  mixNameEdited = false;
+  renderMixCounts();
+  el("#mix-modal").classList.remove("hidden");
+}
+
+function closeMixModal(): void {
+  el("#mix-modal").classList.add("hidden");
+}
+
+async function createVoiceMix(): Promise<void> {
+  const a = findPersona(el<HTMLSelectElement>("#mix-a").value);
+  const b = findPersona(el<HTMLSelectElement>("#mix-b").value);
+  const name = el<HTMLInputElement>("#mix-name").value.trim();
+  if (!a || !b || a === b) {
+    showToast(t("Choose two different voices"), "warning");
+    return;
+  }
+  if (!name) {
+    showToast(t("Give the new voice a name"), "warning");
+    return;
+  }
+  const fromA = personaRecordings(a).slice(0, Number(el<HTMLSelectElement>("#mix-a-count").value) || 1);
+  const fromB = personaRecordings(b).slice(0, Number(el<HTMLSelectElement>("#mix-b-count").value) || 1);
+  // Alternate the two voices so neither comes all first.
+  const recordings: Array<{ path: string; name: string; text: string }> = [];
+  for (let i = 0; i < Math.max(fromA.length, fromB.length); i++) {
+    if (fromA[i]) recordings.push({ ...fromA[i], name: `${a.name}: ${fromA[i].name}` });
+    if (fromB[i]) recordings.push({ ...fromB[i], name: `${b.name}: ${fromB[i].name}` });
+  }
+  const button = el<HTMLButtonElement>("#mix-create");
+  button.disabled = true;
+  const persona = createBlankPersona();
+  persona.name = name;
+  try {
+    const main = await storeSpeakerAsset(persona, recordings[0].path, "audio");
+    persona.refPath = main.path;
+    persona.refName = recordings[0].name;
+    persona.refText = recordings[0].text.trim();
+    persona.extraRefs = [];
+    for (const recording of recordings.slice(1)) {
+      const stored = await invoke<{ path: string }>("store_speaker_extra_asset", {
+        speakerId: persona.id,
+        speakerName: persona.name,
+        sourcePath: recording.path,
+      });
+      persona.extraRefs.push({ path: stored.path, name: recording.name, text: recording.text.trim() });
+    }
+    persona.notes = `${t("Mix of voices")}: ${a.name} (${fromA.length}) + ${b.name} (${fromB.length})`;
+    speakerPersonas.push(persona);
+    selectedGalleryPersonaId = persona.id;
+    saveSpeakerPersonas();
+    closeMixModal();
+    await makeDramaVoiceForPersona(persona);
+  } catch (e) {
+    showToast(`${t("Could not create the mix")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initVoiceMixAndLock(): void {
+  el("#speaker-mix-btn").addEventListener("click", openMixModal);
+  el("#mix-close").addEventListener("click", closeMixModal);
+  el("#mix-cancel").addEventListener("click", closeMixModal);
+  el("#mix-create").addEventListener("click", () => void createVoiceMix());
+  el("#mix-a").addEventListener("change", renderMixCounts);
+  el("#mix-b").addEventListener("change", renderMixCounts);
+  el("#mix-name").addEventListener("input", () => { mixNameEdited = true; });
+
+  el("#output-lock-voice-btn").addEventListener("click", async () => {
+    const result = lastResult;
+    const text = lastResultSpokenText;
+    if (!result || !text) {
+      showToast(t("Lock works for a TTS take, or for a scene line in “Line by line” mode (🔒 at the line)"), "warning");
+      return;
+    }
+    const persona = await lockVoiceFromTake(result, text, `${t("Voice")} ${speakerPersonas.length + 1}`);
+    if (persona) selectDramaVoice(persona.dramaVoiceName || persona.name);
+  });
+}
+
+async function lockSceneLineVoice(index: number): Promise<void> {
+  const line = sceneLines[index];
+  if (!line) return;
+  const character = sceneLinesCharacters[line.reply.character];
+  const persona = await lockVoiceFromTake(line.result, line.reply.text, character?.name || `${t("Voice")} ${speakerPersonas.length + 1}`);
+  if (!persona || !character) return;
+  // The character keeps this voice from now on.
+  const target = dramaScene.characters.find((c) => c.id === character.id);
+  if (target) {
+    target.voice = persona.dramaVoiceName || persona.name;
+    persistDramaScene();
+    renderSceneCharacters();
+    showToast(`${t("Voice locked and given to")} ${target.name}: ${target.voice}`);
+  }
 }
 
 function renderSpeakerDramaState(persona: SpeakerPersona): void {
@@ -5919,6 +6136,7 @@ function renderSceneLineResults(): void {
       <span class="scene-result-meta">${line.result.seconds.toFixed(1)} ${escapeHtml(t("s"))} · seed ${line.result.seed}</span>
       <span class="scene-result-actions">
         <button class="compact-button" data-action="edit" type="button" title="${escapeHtml(t("Cut pauses and pieces out of this line"))}" ${sceneLineBusy >= 0 ? "disabled" : ""}>✂</button>
+        <button class="compact-button" data-action="lock" type="button" title="${escapeHtml(t("Make this take the character's permanent voice"))}" ${sceneLineBusy >= 0 ? "disabled" : ""}>🔒</button>
         <button class="compact-button" data-action="redo" type="button" ${sceneLineBusy >= 0 || isGenerating ? "disabled" : ""}>${escapeHtml(busy ? t("Generating…") : t("↻ Redo"))}</button>
       </span>
     `;
@@ -6209,6 +6427,7 @@ function initDramaScene(): void {
     const index = Number(button.closest<HTMLElement>(".scene-result-row")?.dataset.index);
     if (button.dataset.action === "play") void playSceneLine(index);
     else if (button.dataset.action === "edit") editSceneLine(index);
+    else if (button.dataset.action === "lock") void lockSceneLineVoice(index);
     else void redoSceneLine(index);
   });
   renderDramaScene();
@@ -8583,6 +8802,7 @@ async function main(): Promise<void> {
   initAudioEditing();
   initMontage();
   initSpeakerExtras();
+  initVoiceMixAndLock();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {

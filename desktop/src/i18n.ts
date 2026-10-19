@@ -769,6 +769,32 @@ export const RU: Record<string, string> = {
   "Could not add the recording": "Не удалось добавить запись",
   "Recording": "Запись",
   "needs its exact transcript, or delete it": "нужен точный текст, или удалите её",
+  // Mixing voices and locking a take
+  "Mix voices": "Смешать голоса",
+  "A new voice made of the recordings of two voices": "Новый голос из записей двух голосов",
+  "Recordings": "Записей",
+  "Name of the new voice": "Имя нового голоса",
+  "Drama 3 has no \"percent\" control: the model hears all the recordings as one person and speaks somewhere between them, sometimes closer to one. More recordings of a voice pull the mix towards it. An experiment: generate a few takes and lock the one you like (🔒 Lock voice).":
+    "В Drama 3 нет ползунка «процентов»: модель слышит все записи как одного человека и говорит где-то между ними, иногда ближе к одному. Чем больше записей голоса, тем ближе смесь к нему. Это эксперимент: сделайте несколько дублей и закрепите понравившийся (🔒 Закрепить голос).",
+  "Create the mix": "Создать смесь",
+  "Mixing needs two voices with a recording and its transcript": "Для смешивания нужны два голоса с записью и её текстом",
+  "Choose two different voices": "Выберите два разных голоса",
+  "Give the new voice a name": "Дайте новому голосу имя",
+  "Mix of voices": "Смесь голосов",
+  "Could not create the mix": "Не удалось создать смесь",
+  "🔒 Lock voice": "🔒 Закрепить голос",
+  "Make this take a permanent Drama 3 voice in the Speaker Gallery": "Сделать этот дубль постоянным голосом Drama 3 в Галерее",
+  "Make this take the character's permanent voice": "Сделать этот дубль постоянным голосом персонажа",
+  "The take becomes a voice in the Speaker Gallery. Its name:": "Дубль станет голосом в Галерее. Его имя:",
+  "Locked take": "Закреплённый дубль",
+  "Locked from a take": "Закреплён из дубля",
+  "The take was longer than 30 s and was cut: check the transcript in the Speaker Gallery":
+    "Дубль длиннее 30 с и был обрезан: проверьте текст в Галерее",
+  "Could not lock the voice": "Не удалось закрепить голос",
+  "Lock works for a TTS take, or for a scene line in “Line by line” mode (🔒 at the line)":
+    "Закрепить можно дубль из TTS или реплику сцены в режиме «По репликам» (🔒 у реплики)",
+  "Voice locked and given to": "Голос закреплён и назначен персонажу",
+  "OK": "ОК",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

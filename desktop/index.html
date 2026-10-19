@@ -279,6 +279,7 @@
                 </div>
                 <div class="identity-actions">
                   <button id="speaker-add-btn" class="compact-button primary" type="button">+ Speaker</button>
+                  <button id="speaker-mix-btn" class="compact-button" type="button" title="A new voice made of the recordings of two voices">Mix voices</button>
                   <button id="speaker-voicepack-btn" class="compact-button" type="button" title="Download the standard Nerual Dreming voice pack and add all voices to the gallery">Standard voices</button>
                   <button id="speaker-import-btn" class="compact-button" type="button">Import</button>
                   <button id="speaker-export-btn" class="compact-button" type="button">Export</button>
@@ -977,6 +978,7 @@ Third phrase."></textarea>
               <h3>Output</h3>
               <button id="output-edit-btn" class="compact-button output-edit-button" type="button" title="Cut pauses and pieces out of the result">✂ Edit</button>
               <button id="output-to-montage-btn" class="compact-button" type="button" title="Add the result to the Montage tab">+ To montage</button>
+              <button id="output-lock-voice-btn" class="compact-button drama-only hidden" type="button" title="Make this take a permanent Drama 3 voice in the Speaker Gallery">🔒 Lock voice</button>
               <div class="save-menu">
                 <button id="download-output-btn" class="compact-button icon-save-button" type="button" aria-label="Save audio" title="Save audio">
                   <svg class="download-save-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" aria-hidden="true">
@@ -1239,6 +1241,55 @@ Third phrase."></textarea>
           </div>
           <p id="choice-message" class="choice-message"></p>
           <div id="choice-actions" class="modal-actions"></div>
+        </section>
+      </div>
+
+      <!-- ═══════════ Text prompt (one line of input) ═══════════ -->
+      <div id="text-prompt-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="text-prompt-title">
+        <section class="modal-panel choice-panel">
+          <div class="modal-head">
+            <h3 id="text-prompt-title"></h3>
+          </div>
+          <p id="text-prompt-message" class="choice-message"></p>
+          <div class="text-prompt-body">
+            <input id="text-prompt-input" class="text-input" type="text" />
+          </div>
+          <div class="modal-actions">
+            <button id="text-prompt-cancel" class="compact-button" type="button">Cancel</button>
+            <button id="text-prompt-ok" class="compact-button primary" type="button">OK</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ═══════════ Mix two voices ═══════════ -->
+      <div id="mix-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mix-title">
+        <section class="modal-panel mix-panel">
+          <div class="modal-head">
+            <div>
+              <h3 id="mix-title">Mix voices</h3>
+              <span class="api-status-text">A new voice made of the recordings of two voices</span>
+            </div>
+            <button id="mix-close" class="popover-close" type="button" aria-label="Close">✕</button>
+          </div>
+          <div class="mix-body">
+            <div class="mix-row">
+              <span class="mix-label">1</span>
+              <select id="mix-a" class="select-input"></select>
+              <label class="mix-count"><span>Recordings</span><select id="mix-a-count" class="select-input"></select></label>
+            </div>
+            <div class="mix-row">
+              <span class="mix-label">2</span>
+              <select id="mix-b" class="select-input"></select>
+              <label class="mix-count"><span>Recordings</span><select id="mix-b-count" class="select-input"></select></label>
+            </div>
+            <label class="field-label" for="mix-name">Name of the new voice</label>
+            <input id="mix-name" class="text-input" type="text" />
+            <p class="input-hint">Drama 3 has no "percent" control: the model hears all the recordings as one person and speaks somewhere between them, sometimes closer to one. More recordings of a voice pull the mix towards it. An experiment: generate a few takes and lock the one you like (🔒 Lock voice).</p>
+          </div>
+          <div class="modal-actions">
+            <button id="mix-cancel" class="compact-button" type="button">Cancel</button>
+            <button id="mix-create" class="compact-button primary" type="button">Create the mix</button>
+          </div>
         </section>
       </div>
 
