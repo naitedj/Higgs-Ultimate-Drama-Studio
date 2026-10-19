@@ -4287,7 +4287,7 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &cancel_item, &quit_item])?;
             let mut tray_builder = TrayIconBuilder::new()
-                .tooltip("Higgs Ultimate")
+                .tooltip("Drama Studio")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
