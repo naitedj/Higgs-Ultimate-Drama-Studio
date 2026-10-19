@@ -118,6 +118,19 @@ struct SpeakerArchivePersona {
     drama_voice_name: String,
     #[serde(default)]
     drama_voice_text: String,
+    /// Дополнительные записи того же голоса для Drama 3 (каждая со своим текстом).
+    #[serde(default)]
+    extra_refs: Vec<SpeakerExtraRef>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeakerExtraRef {
+    path: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    text: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3688,6 +3701,36 @@ fn speaker_cache_path(
     }))
 }
 
+/// Копирует дополнительную запись голоса в его папку как reference_extra_N.<ext>
+/// (основная запись reference.* не трогается).
+#[tauri::command]
+fn store_speaker_extra_asset(
+    app: AppHandle,
+    speaker_id: String,
+    speaker_name: String,
+    source_path: String,
+) -> Result<serde_json::Value, String> {
+    let src = PathBuf::from(&source_path);
+    if !src.is_file() {
+        return Err(format!("source file not found: {}", source_path));
+    }
+    let ext = src.extension().and_then(|value| value.to_str()).unwrap_or("wav");
+    let dir = speaker_dir(&app, &speaker_id, &speaker_name)?;
+    let (filename, dest) = (1..1000)
+        .map(|n| {
+            let name = format!("reference_extra_{n}.{ext}");
+            let path = dir.join(&name);
+            (name, path)
+        })
+        .find(|(_, path)| !path.exists())
+        .ok_or("too many extra recordings")?;
+    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "path": dest.to_string_lossy(),
+        "fileName": filename,
+    }))
+}
+
 /// Где лежит файл голоса Drama 3 голоса из галереи: в папке этого голоса.
 #[tauri::command]
 fn speaker_drama_voice_path(
@@ -4782,6 +4825,7 @@ pub fn run() {
             download_voicepack,
             speaker_cache_path,
             speaker_drama_voice_path,
+            store_speaker_extra_asset,
             write_speaker_metadata,
             export_speaker_zip,
             import_speaker_zip,

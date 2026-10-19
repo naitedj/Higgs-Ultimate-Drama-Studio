@@ -332,6 +332,14 @@
                     </div>
                     <textarea id="speaker-gallery-transcript" class="text-area" rows="4" placeholder="What this reference voice says…"></textarea>
                   </div>
+                  <div class="input-group speaker-extra-box">
+                    <div class="label-row">
+                      <span class="field-label">More recordings of this voice</span>
+                      <button id="speaker-extra-add" class="link-button" type="button">+ Add a recording</button>
+                    </div>
+                    <div id="speaker-extra-list" class="speaker-extra-list"></div>
+                    <p class="input-hint">2–3 recordings of the same person make the Drama 3 voice steadier between takes. Each needs its exact transcript; the Drama 3 voice is made from all of them.</p>
+                  </div>
                   <div class="input-group speaker-drama-box">
                     <div class="label-row">
                       <span class="field-label">Drama 3 voice</span>
@@ -442,6 +450,10 @@
                     <button id="scene-mode-scene" type="button">Whole scene</button>
                     <button id="scene-mode-lines" type="button">Line by line</button>
                   </div>
+                  <label class="inline-toggle" title="Brings every line to the same loudness (EBU R128, −20 LUFS): takes of one voice sound closer to each other">
+                    <span>Even out loudness</span>
+                    <span class="toggle-switch"><input type="checkbox" id="scene-level" checked /><span class="toggle-slider"></span></span>
+                  </label>
                   <label class="slider-label" id="scene-pause-row">
                     <span class="slider-name">Pause between lines</span>
                     <input type="range" id="scene-pause" min="0" max="1.5" step="0.05" value="0.35" />
@@ -680,6 +692,7 @@
                 <span>s</span>
               </label>
               <div class="slider-label">
+                <button id="drama-options-stable" class="compact-button" type="button" title="Temperature 0.75 and Top-P 0.85: the voice keeps closer to its reference, speech is a little more even">Steady voice</button>
                 <button id="drama-options-reset" class="compact-button" type="button">Reset to defaults</button>
               </div>
             </div>

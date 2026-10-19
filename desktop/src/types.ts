@@ -251,6 +251,7 @@ export type GenerationJob = {
         script: string;
         sceneMode: "scene" | "lines";
         pause: number;
+        level?: boolean;
       };
 };
 
@@ -270,8 +271,10 @@ export type SpeakerPersona = {
   dramaVoicePath?: string;
   /** Name the voice file is added to the Drama 3 model under. */
   dramaVoiceName?: string;
-  /** Transcript the voice file was made with, to notice an edited transcript. */
+  /** What the voice file was made from (transcripts and extra recordings), to notice a change. */
   dramaVoiceText?: string;
+  /** More recordings of the same voice for Drama 3, each with its exact transcript. */
+  extraRefs?: Array<{ path: string; name: string; text: string }>;
 };
 
 export type LinePointerDrag = {

@@ -2385,3 +2385,9 @@ input[type="range"]::-moz-range-thumb {
 .scene-speaker-hint { margin: 4px 0 8px; }
 .scene-preview-line { cursor: pointer; border-radius: 3px; padding: 1px 4px; }
 .scene-preview-line:hover { background: var(--accent-soft); }
+.speaker-extra-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.speaker-extra-row { border: 1px solid var(--border); border-radius: 4px; display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.speaker-extra-head { align-items: center; display: flex; gap: 8px; }
+.speaker-extra-name { color: var(--text-secondary); flex: 1; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speaker-extra-head .icon-button.danger:hover { border-color: #ef4444; color: #ef4444; }
+#drama-options-stable { margin-right: 6px; }

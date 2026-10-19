@@ -63,6 +63,8 @@ import {
   DRAMA_SELECTED_VOICE_STORAGE_KEY,
   DRAMA_MAX_SECONDS_LIMIT,
   DRAMA_MAX_SPEAKERS,
+  DRAMA_STEADY_TEMPERATURE,
+  DRAMA_STEADY_TOP_P,
   characterVoiceHint,
   loadDramaScene,
   newDramaCharacter,
@@ -2520,6 +2522,9 @@ function cleanPersona(raw: any): SpeakerPersona | null {
     dramaVoicePath: String(raw.dramaVoicePath || raw.drama_voice_path || ""),
     dramaVoiceName: String(raw.dramaVoiceName || raw.drama_voice_name || ""),
     dramaVoiceText: String(raw.dramaVoiceText || raw.drama_voice_text || ""),
+    extraRefs: (Array.isArray(raw.extraRefs) ? raw.extraRefs : Array.isArray(raw.extra_refs) ? raw.extra_refs : [])
+      .filter((r: any) => r && typeof r.path === "string" && r.path)
+      .map((r: any) => ({ path: String(r.path), name: String(r.name || r.path.split(/[/\\]/).pop() || ""), text: String(r.text || "") })),
   };
 }
 
@@ -2802,6 +2807,7 @@ function renderSpeakerGalleryEditor(): void {
     hideRefPreview("gallery");
   }
   el("#speaker-gallery-trim").classList.toggle("hidden", !persona.refPath);
+  renderSpeakerExtras(persona);
   renderSpeakerDramaState(persona);
 }
 
@@ -4223,6 +4229,7 @@ function loadQueuedJobForEdit(job: GenerationJob): void {
       script: payload.script,
       mode: payload.sceneMode,
       pause: payload.pause,
+      level: payload.level ?? true,
     };
     saveDramaScene(dramaScene);
     renderDramaScene();
@@ -4797,11 +4804,159 @@ function uniqueDramaVoiceName(base: string, except?: SpeakerPersona): string {
   return name;
 }
 
+/** What a persona's Drama 3 voice is made of: every transcript and extra recording. */
+function personaDramaSignature(persona: SpeakerPersona): string {
+  const extras = (persona.extraRefs || []).map((r) => `\n${r.path}\u0001${r.text.trim()}`).join("");
+  return `${persona.refText.trim()}${extras}`;
+}
+
+// ─── More recordings of one voice ───
+
+const speakerExtraPlayer = new Audio();
+let speakerExtraPlayerUrl = "";
+let speakerExtraPlaying = -1;
+
+function renderSpeakerExtras(persona: SpeakerPersona): void {
+  const list = el<HTMLElement>("#speaker-extra-list");
+  list.innerHTML = "";
+  (persona.extraRefs || []).forEach((ref, index) => {
+    const row = document.createElement("div");
+    row.className = "speaker-extra-row";
+    row.dataset.index = String(index);
+    row.innerHTML = `
+      <div class="speaker-extra-head">
+        <button class="ref-play" data-action="play" type="button" aria-label="${escapeHtml(t("Play"))}">${speakerExtraPlaying === index ? "⏸" : "▶"}</button>
+        <span class="speaker-extra-name"></span>
+        <button class="link-button" data-action="transcribe" type="button">${escapeHtml(t("✦ Auto-transcribe"))}</button>
+        <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
+      </div>
+      <textarea class="text-area" data-field="text" rows="2" placeholder="${escapeHtml(t("The exact words of this recording…"))}"></textarea>
+    `;
+    row.querySelector<HTMLElement>(".speaker-extra-name")!.textContent = `${index + 2}. ${ref.name}`;
+    row.querySelector<HTMLTextAreaElement>('[data-field="text"]')!.value = ref.text;
+    list.appendChild(row);
+  });
+}
+
+function changedSpeakerExtras(persona: SpeakerPersona): void {
+  persona.updatedAt = Date.now();
+  persistSpeakerPersonas();
+  scheduleSpeakerPersonaFolderSync(persona);
+  renderSpeakerDramaState(persona);
+}
+
+/** Adds recordings to the selected voice: `paths`, or the files picked in a dialog. */
+async function addSpeakerExtraRecordings(given?: string[]): Promise<void> {
+  const persona = selectedGalleryPersona();
+  if (!persona) return;
+  if (!persona.refPath) {
+    showToast(t("Add the main recording first"), "warning");
+    return;
+  }
+  let paths = given ?? [];
+  if (!given) {
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "ogg", "aac", "opus"] }],
+    });
+    paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+  }
+  for (const path of paths) {
+    try {
+      // Same preparation as the main recording: WAV, cleaned if that is on, at most 30 s.
+      const prepared = await prepareReferenceAudioFile(path, path.split(/[/\\]/).pop());
+      const stored = await invoke<{ path: string; fileName: string }>("store_speaker_extra_asset", {
+        speakerId: persona.id,
+        speakerName: persona.name,
+        sourcePath: prepared.path,
+      });
+      persona.extraRefs = [...(persona.extraRefs || []), { path: stored.path, name: prepared.name, text: "" }];
+      changedSpeakerExtras(persona);
+      renderSpeakerExtras(persona);
+      const text = await tryAutoTranscribeSilently(stored.path);
+      const ref = persona.extraRefs.find((r) => r.path === stored.path);
+      if (ref && text && !ref.text) {
+        ref.text = text;
+        changedSpeakerExtras(persona);
+        renderSpeakerExtras(persona);
+      }
+    } catch (e) {
+      showToast(`${t("Could not add the recording")}: ${e}`, "error");
+    }
+  }
+}
+
+function initSpeakerExtras(): void {
+  el("#speaker-extra-add").addEventListener("click", () => void addSpeakerExtraRecordings());
+  const list = el<HTMLElement>("#speaker-extra-list");
+  list.addEventListener("input", (event) => {
+    const area = event.target as HTMLTextAreaElement;
+    const persona = selectedGalleryPersona();
+    const ref = persona?.extraRefs?.[Number(area.closest<HTMLElement>(".speaker-extra-row")?.dataset.index)];
+    if (!persona || !ref) return;
+    ref.text = area.value;
+    changedSpeakerExtras(persona);
+  });
+  list.addEventListener("click", async (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    const persona = selectedGalleryPersona();
+    if (!button || !persona?.extraRefs) return;
+    const index = Number(button.closest<HTMLElement>(".speaker-extra-row")?.dataset.index);
+    const ref = persona.extraRefs[index];
+    if (!ref) return;
+    if (button.dataset.action === "remove") {
+      persona.extraRefs.splice(index, 1);
+      speakerExtraPlayer.pause();
+      speakerExtraPlaying = -1;
+      changedSpeakerExtras(persona);
+      renderSpeakerExtras(persona);
+    } else if (button.dataset.action === "transcribe") {
+      button.disabled = true;
+      try {
+        const text = await transcribeAudioText(ref.path);
+        if (text) {
+          ref.text = text.trim();
+          changedSpeakerExtras(persona);
+          renderSpeakerExtras(persona);
+        }
+      } catch (e) {
+        showToast(`${t("Transcription failed")}: ${e}`, "error");
+      } finally {
+        button.disabled = false;
+      }
+    } else if (button.dataset.action === "play") {
+      speakerExtraPlayer.pause();
+      if (speakerExtraPlaying === index) {
+        speakerExtraPlaying = -1;
+        renderSpeakerExtras(persona);
+        return;
+      }
+      try {
+        const audio = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: ref.path });
+        if (speakerExtraPlayerUrl) URL.revokeObjectURL(speakerExtraPlayerUrl);
+        speakerExtraPlayerUrl = URL.createObjectURL(await base64ToBlobAsync(audio.wavBase64, "audio/wav"));
+        speakerExtraPlayer.src = speakerExtraPlayerUrl;
+        speakerExtraPlaying = index;
+        speakerExtraPlayer.onended = () => {
+          speakerExtraPlaying = -1;
+          const current = selectedGalleryPersona();
+          if (current) renderSpeakerExtras(current);
+        };
+        renderSpeakerExtras(persona);
+        await speakerExtraPlayer.play();
+      } catch (e) {
+        speakerExtraPlaying = -1;
+        showToast(`${t("Could not read the recording")}: ${e}`, "error");
+      }
+    }
+  });
+}
+
 function renderSpeakerDramaState(persona: SpeakerPersona): void {
   const state = el<HTMLElement>("#speaker-drama-state");
   const button = el<HTMLButtonElement>("#speaker-drama-make-btn");
   const ready = Boolean(persona.dramaVoicePath);
-  const stale = ready && (persona.dramaVoiceText || "").trim() !== persona.refText.trim();
+  const stale = ready && (persona.dramaVoiceText || "").trim() !== personaDramaSignature(persona).trim();
   const making = dramaVoiceMaking === persona.id;
   setText("#speaker-drama-state", making
     ? t("Creating…")
@@ -4828,6 +4983,12 @@ async function makeDramaVoiceForPersona(persona: SpeakerPersona): Promise<void> 
     showToast(t("Drama 3 needs the exact transcript of the reference: type it or use Auto-transcribe"), "warning");
     return;
   }
+  const extras = persona.extraRefs || [];
+  const missing = extras.findIndex((r) => !r.text.trim());
+  if (missing >= 0) {
+    showToast(`${t("Recording")} ${missing + 2} (${extras[missing].name}): ${t("needs its exact transcript, or delete it")}`, "warning");
+    return;
+  }
   dramaVoiceMaking = persona.id;
   renderSpeakerDramaState(persona);
   try {
@@ -4847,7 +5008,10 @@ async function makeDramaVoiceForPersona(persona: SpeakerPersona): Promise<void> 
     }
     const result = await invoke<{ path: string }>("drama_voice_make", {
       request: {
-        references: [{ path: persona.refPath, transcript }],
+        references: [
+          { path: persona.refPath, transcript },
+          ...extras.map((r) => ({ path: r.path, transcript: r.text.trim() })),
+        ],
         voices: [],
         outPath: target.path,
         modelPath: modelPath || null,
@@ -4856,7 +5020,7 @@ async function makeDramaVoiceForPersona(persona: SpeakerPersona): Promise<void> 
     });
     persona.dramaVoicePath = result.path;
     persona.dramaVoiceName = name;
-    persona.dramaVoiceText = transcript;
+    persona.dramaVoiceText = personaDramaSignature(persona);
     persona.updatedAt = Date.now();
     await refreshDramaStatus();
     showToast(dramaStatus.modelLoaded
@@ -5259,6 +5423,7 @@ function captureDramaGenerationJob(overrideText?: string): GenerationJob {
       script: dramaScene.script,
       sceneMode: dramaScene.mode,
       pause: dramaScene.pause,
+      level: dramaScene.level,
     };
   } else {
     const text = (overrideText ?? el<HTMLTextAreaElement>("#tts-text").value).trim();
@@ -5472,6 +5637,10 @@ function initDramaEngine(): void {
     seedInput.value = last;
     persist();
     showToast(t("Seed kept: generation will repeat this take"));
+  });
+  el("#drama-options-stable").addEventListener("click", () => {
+    applyDramaOptionsToUi({ ...readDramaOptionsFromUi(), temperature: DRAMA_STEADY_TEMPERATURE, topP: DRAMA_STEADY_TOP_P });
+    showToast(t("Steady voice: temperature 0.75, Top-P 0.85"));
   });
   el("#drama-options-reset").addEventListener("click", () => {
     applyDramaOptionsToUi({ ...DRAMA_DEFAULT_OPTIONS });
@@ -5716,6 +5885,7 @@ function renderSceneMode(): void {
   el("#scene-mode-lines").classList.toggle("active", lines);
   el("#scene-pause-row").classList.toggle("hidden", !lines);
   el<HTMLInputElement>("#scene-pause").value = String(dramaScene.pause);
+  el<HTMLInputElement>("#scene-level").checked = dramaScene.level;
   el("#scene-val-pause").textContent = dramaScene.pause.toFixed(2);
   setText("#scene-mode-hint", lines
     ? t("Each reply on its own, with its character's voice: every line gets a player and a Redo button, and the lines are joined with the pause.")
@@ -5826,7 +5996,7 @@ async function redoSceneLine(index: number): Promise<void> {
     const result = await invoke<DramaGenerationResult>("drama_generate", {
       request: { text, voice, options, streamPlayback: false },
     });
-    sceneLines[index] = { reply: line.reply, result: autoShortenPauses(result) };
+    sceneLines[index] = { reply: line.reply, result: await levelSceneTake(autoShortenPauses(result), dramaScene.level) };
     reportAutoShortened();
     setDramaLastSeed(result.seed);
     const joined = showJoinedSceneLines();
@@ -5869,11 +6039,19 @@ async function prepareSceneVoice(characters: DramaCharacter[]): Promise<string> 
   return name;
 }
 
+/** A scene take at the common loudness (−20 LUFS) when `level` is on; unchanged otherwise. */
+async function levelSceneTake(result: DramaGenerationResult, level: boolean): Promise<DramaGenerationResult> {
+  if (!level) return result;
+  const leveled = await normalizeResultLoudness(result);
+  return { ...result, wavBase64: leveled.wavBase64 };
+}
+
 async function generateDramaScene(
   job: GenerationJob,
   payload: Extract<GenerationJob["payload"], { kind: "scene" }>,
 ): Promise<GenerationResult> {
   const characters = payload.characters;
+  const level = payload.level ?? true;
   const { replies, unknown } = parseScene(payload.script, characters);
   if (unknown.length > 0) throw new Error(`${t("Not in the character list")}: ${unknown.join(", ")}`);
   if (replies.length === 0) throw new Error(t("Write the script: one reply per line, “Name: text”"));
@@ -5892,7 +6070,7 @@ async function generateDramaScene(
         request: { text, voice, options: job.options, streamPlayback: false },
       });
       setDramaLastSeed(result.seed);
-      sceneLines.push({ reply: replies[i], result: autoShortenPauses(result) });
+      sceneLines.push({ reply: replies[i], result: await levelSceneTake(autoShortenPauses(result), level) });
       renderSceneLineResults();
     }
     setProgress("#gen-progress-bar", 1, 1);
@@ -5924,7 +6102,7 @@ async function generateDramaScene(
     if (result.stop === "max_seconds") {
       window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
     }
-    results.push(autoShortenPauses(result));
+    results.push(await levelSceneTake(autoShortenPauses(result), level));
   }
   setProgress("#gen-progress-bar", 1, 1);
   reportAutoShortened();
@@ -6015,6 +6193,10 @@ function initDramaScene(): void {
     persistDramaScene();
     renderSceneMode();
     renderScenePreview();
+  });
+  el<HTMLInputElement>("#scene-level").addEventListener("change", (event) => {
+    dramaScene.level = (event.target as HTMLInputElement).checked;
+    persistDramaScene();
   });
   el<HTMLInputElement>("#scene-pause").addEventListener("input", (event) => {
     dramaScene.pause = parseFloat((event.target as HTMLInputElement).value);
@@ -8400,12 +8582,15 @@ async function main(): Promise<void> {
   initDramaEngine();
   initAudioEditing();
   initMontage();
+  initSpeakerExtras();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
       addMontageClip,
       montageResult: () => montageResult,
       applyGalleryReference,
+      addSpeakerExtraRecordings,
+      sceneLineAudio: () => sceneLines.map((l) => l.result.wavBase64),
       personas: () => speakerPersonas.map((p) => ({ id: p.id, name: p.name, refPath: p.refPath, refText: p.refText })),
     };
   }

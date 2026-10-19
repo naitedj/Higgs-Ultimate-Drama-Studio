@@ -39,6 +39,10 @@ export const DRAMA_DEFAULT_OPTIONS: DramaOptions = {
 
 export const DRAMA_MAX_SECONDS_LIMIT = 95.1;
 
+/** Less randomness: the voice keeps closer to its reference between takes. top_k stays. */
+export const DRAMA_STEADY_TEMPERATURE = 0.75;
+export const DRAMA_STEADY_TOP_P = 0.85;
+
 export function getEngineKind(): EngineKind {
   return localStorage.getItem(ENGINE_KIND_STORAGE_KEY) === "higgs" ? "higgs" : "drama";
 }
@@ -259,6 +263,8 @@ export type DramaScene = {
   mode: DramaSceneMode;
   /** Seconds of silence between lines in line-by-line mode. */
   pause: number;
+  /** Bring every line (or part) to the same loudness. */
+  level: boolean;
 };
 
 export type SceneReply = {
@@ -292,12 +298,13 @@ export function loadDramaScene(): DramaScene {
         script: typeof raw.script === "string" ? raw.script : "",
         mode: raw.mode === "lines" ? "lines" : "scene",
         pause: Number.isFinite(raw.pause) ? Math.min(1.5, Math.max(0, raw.pause)) : 0.35,
+        level: typeof raw.level === "boolean" ? raw.level : true,
       };
     }
   } catch {
     // Start empty.
   }
-  return { characters: [], script: "", mode: "scene", pause: 0.35 };
+  return { characters: [], script: "", mode: "scene", pause: 0.35, level: true };
 }
 
 export function saveDramaScene(scene: DramaScene): void {

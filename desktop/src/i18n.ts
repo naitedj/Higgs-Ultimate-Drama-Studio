@@ -753,6 +753,22 @@ export const RU: Record<string, string> = {
   "characters added": "добавлены персонажи",
   "speaker guessed for": "говорящий угадан у",
   "check them": "проверьте их",
+  // Steadier voices: steady preset, scene loudness, several recordings per voice
+  "Steady voice": "Стабильный голос",
+  "Temperature 0.75 and Top-P 0.85: the voice keeps closer to its reference, speech is a little more even":
+    "Temperature 0,75 и Top-P 0,85: голос ближе к эталону, речь чуть ровнее",
+  "Steady voice: temperature 0.75, Top-P 0.85": "Стабильный голос: temperature 0,75, Top-P 0,85",
+  "Brings every line to the same loudness (EBU R128, −20 LUFS): takes of one voice sound closer to each other":
+    "Приводит каждую реплику к одной громкости (EBU R128, −20 LUFS): дубли одного голоса звучат ближе друг к другу",
+  "More recordings of this voice": "Ещё записи этого голоса",
+  "+ Add a recording": "+ Добавить запись",
+  "2–3 recordings of the same person make the Drama 3 voice steadier between takes. Each needs its exact transcript; the Drama 3 voice is made from all of them.":
+    "2–3 записи одного и того же человека делают голос Drama 3 стабильнее от дубля к дублю. У каждой нужен точный текст; голос Drama 3 собирается из всех записей.",
+  "The exact words of this recording…": "Точный текст этой записи…",
+  "Add the main recording first": "Сначала добавьте основную запись",
+  "Could not add the recording": "Не удалось добавить запись",
+  "Recording": "Запись",
+  "needs its exact transcript, or delete it": "нужен точный текст, или удалите её",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",
