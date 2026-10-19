@@ -4882,6 +4882,8 @@ function renderDramaVoiceSelect(): void {
   }
   select.value = Array.from(select.options).some((o) => o.value === current) ? current : "none";
   el<HTMLButtonElement>("#drama-voice-remove-btn").disabled = !dramaVoiceFiles.some((v) => v.name === select.value);
+  // The Multi Speaker characters choose from the same voices.
+  refreshSceneVoiceOptions();
 }
 
 function selectDramaVoice(name: string): void {
@@ -5515,22 +5517,50 @@ function sceneProblem(): string {
   return "";
 }
 
+/** The voices a character can have: "none", added files and Speaker Gallery voices. */
+function sceneVoiceOptionsHtml(current: string): string {
+  const voices = ["none", ...Array.from(new Set(dramaVoiceSources().map((v) => v.name)))];
+  const options = voices.includes(current) ? voices : [...voices, current];
+  return options
+    .map((name) => {
+      const label = name === "none"
+        ? t("none (the model chooses)")
+        : voices.includes(name) ? name : `${name} (${t("not found")})`;
+      return `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+}
+
+/**
+ * Brings the characters' voice lists up to date (a voice just made in the Speaker
+ * Gallery or added as a file) without rebuilding the rows, so typing is not disturbed.
+ */
+function refreshSceneVoiceOptions(): void {
+  const list = document.querySelector<HTMLElement>("#scene-characters");
+  if (!list) return;
+  for (const select of list.querySelectorAll<HTMLSelectElement>('select[data-field="voice"]')) {
+    const index = Number(select.closest<HTMLElement>(".scene-character-row")?.dataset.index);
+    const character = dramaScene.characters[index];
+    if (!character) continue;
+    const html = sceneVoiceOptionsHtml(character.voice);
+    if (select.innerHTML !== html) {
+      select.innerHTML = html;
+      select.value = character.voice;
+    }
+  }
+}
+
 function renderSceneCharacters(): void {
   const list = el<HTMLElement>("#scene-characters");
   list.innerHTML = "";
-  const voices = ["none", ...Array.from(new Set(dramaVoiceSources().map((v) => v.name)))];
   dramaScene.characters.forEach((character, index) => {
     const row = document.createElement("div");
     row.className = "scene-character-row";
     row.dataset.index = String(index);
-    const options = [...voices];
-    if (!options.includes(character.voice)) options.push(character.voice);
     row.innerHTML = `
       <span class="scene-speaker-badge" style="--speaker-color:${sceneColor(index)}" title="${escapeHtml(t("Speaker number in Drama 3"))}">${index}</span>
       <input class="text-input" data-field="name" type="text" placeholder="${escapeHtml(t("Name"))}" />
-      <select class="select-input" data-field="voice">
-        ${options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name === "none" ? t("none (the model chooses)") : voices.includes(name) ? name : `${name} (${t("not found")})`)}</option>`).join("")}
-      </select>
+      <select class="select-input" data-field="voice">${sceneVoiceOptionsHtml(character.voice)}</select>
       <input class="text-input" data-field="description" type="text" spellcheck="false"
         placeholder="${escapeHtml(t("Voice description in English, e.g. calm elderly man, low voice"))}" />
       <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
