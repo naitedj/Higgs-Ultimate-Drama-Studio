@@ -4627,6 +4627,19 @@ async fn drama_voice_make(
     Ok(serde_json::json!({ "path": path, "modelInfo": info }))
 }
 
+/// Путь общего файла голосов сцены (несколько персонажей): drama-voices рядом с программой.
+/// `key` — короткий хеш состава персонажей, только [0-9a-z].
+#[tauri::command]
+fn drama_scene_voice_path(key: String) -> Result<serde_json::Value, String> {
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("недопустимый ключ сцены: {key}"));
+    }
+    let dir = app_root_dir().join("drama-voices");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("scene-{key}.voice.gguf"));
+    Ok(serde_json::json!({ "path": path.to_string_lossy(), "exists": path.exists() }))
+}
+
 /// Последние строки журнала speech.cpp (загрузка модели, размещение слоёв, ошибки).
 #[tauri::command]
 fn drama_log() -> Vec<String> {
@@ -4790,6 +4803,7 @@ pub fn run() {
             drama_cancel,
             drama_voice_add,
             drama_voice_make,
+            drama_scene_voice_path,
             drama_log,
         ])
         .run(tauri::generate_context!())

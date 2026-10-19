@@ -229,3 +229,186 @@ export function insertTagAtCursor(textarea: HTMLTextAreaElement, tag: string): v
   textarea.setSelectionRange(cursor, cursor);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
+
+// ─── Scene: several characters in one text ─────────────────────────────────
+//
+// A script of "Name: reply" lines becomes Drama 3 text with <|speaker:N|> tags,
+// N being the character's place in the list. Characters with a voice file share one
+// voice file made of them (each under its speaker); "none" characters get the
+// model's voice of choice, steered by their description in square brackets.
+
+export const DRAMA_SCENE_STORAGE_KEY = "dramaStudio.scene";
+export const DRAMA_MAX_SPEAKERS = 16;
+/** Text per request of a whole scene: well under the 95 s one request may last. */
+export const DRAMA_SCENE_PART_CHARS = 700;
+
+export type DramaCharacter = {
+  id: string;
+  name: string;
+  /** "none" or the name of a Drama 3 voice (gallery or added file). */
+  voice: string;
+  /** For "none": how the voice sounds, in English. */
+  description: string;
+};
+
+export type DramaSceneMode = "scene" | "lines";
+
+export type DramaScene = {
+  characters: DramaCharacter[];
+  script: string;
+  mode: DramaSceneMode;
+  /** Seconds of silence between lines in line-by-line mode. */
+  pause: number;
+};
+
+export type SceneReply = {
+  /** Index in the character list = speaker number. */
+  character: number;
+  text: string;
+  /** Script line (from 1) where the reply starts. */
+  line: number;
+};
+
+let characterCounter = 0;
+
+export function newDramaCharacter(name = ""): DramaCharacter {
+  characterCounter += 1;
+  return { id: `char_${Date.now().toString(36)}_${characterCounter}`, name, voice: "none", description: "" };
+}
+
+export function loadDramaScene(): DramaScene {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DRAMA_SCENE_STORAGE_KEY) || "null");
+    if (raw && Array.isArray(raw.characters)) {
+      return {
+        characters: raw.characters
+          .filter((c: any) => c && typeof c.name === "string")
+          .map((c: any) => ({
+            id: String(c.id || newDramaCharacter().id),
+            name: c.name,
+            voice: typeof c.voice === "string" && c.voice ? c.voice : "none",
+            description: typeof c.description === "string" ? c.description : "",
+          })),
+        script: typeof raw.script === "string" ? raw.script : "",
+        mode: raw.mode === "lines" ? "lines" : "scene",
+        pause: Number.isFinite(raw.pause) ? Math.min(1.5, Math.max(0, raw.pause)) : 0.35,
+      };
+    }
+  } catch {
+    // Start empty.
+  }
+  return { characters: [], script: "", mode: "scene", pause: 0.35 };
+}
+
+export function saveDramaScene(scene: DramaScene): void {
+  localStorage.setItem(DRAMA_SCENE_STORAGE_KEY, JSON.stringify(scene));
+}
+
+function sameName(a: string, b: string): boolean {
+  return a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+}
+
+/**
+ * "Name: text" → name and text, when the part before the colon could be a name:
+ * at most three words, no brackets, no sentence punctuation.
+ */
+function splitNamePrefix(line: string): { name: string; text: string } | null {
+  const match = /^\s*([^:[\]<>|.!?…"«»]{1,40}?)\s*:\s?(.*)$/.exec(line);
+  if (!match) return null;
+  const name = match[1].trim();
+  if (!name || name.split(/\s+/).length > 3) return null;
+  return { name, text: match[2] };
+}
+
+/** Whether an unknown "X:" prefix looks like a character name: every word capitalised. */
+function looksLikeName(name: string): boolean {
+  return name.split(/\s+/).every((word) => /^\p{Lu}/u.test(word));
+}
+
+/**
+ * Splits a script into replies. A line starting with a character's name and a colon
+ * starts that character's reply; any other line continues the reply before it (or,
+ * at the start, is the first character's, as Drama 3 gives text before the first tag
+ * to speaker 0). "Unknown" lists prefixes that look like names of no character.
+ */
+export function parseScene(script: string, characters: DramaCharacter[]): { replies: SceneReply[]; unknown: string[] } {
+  const replies: SceneReply[] = [];
+  const unknown = new Set<string>();
+  script.split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line) return;
+    const prefix = splitNamePrefix(line);
+    if (prefix) {
+      const character = characters.findIndex((c) => c.name.trim() && sameName(c.name, prefix.name));
+      if (character >= 0) {
+        replies.push({ character, text: prefix.text.trim(), line: index + 1 });
+        return;
+      }
+      if (looksLikeName(prefix.name)) unknown.add(prefix.name);
+    }
+    const last = replies[replies.length - 1];
+    if (last) last.text = last.text ? `${last.text} ${line}` : line;
+    else replies.push({ character: 0, text: line, line: index + 1 });
+  });
+  return { replies: replies.filter((r) => r.text), unknown: Array.from(unknown) };
+}
+
+/** Names before a colon in the script that are not characters yet, in order of appearance. */
+export function sceneNameCandidates(script: string, characters: DramaCharacter[]): string[] {
+  const found: string[] = [];
+  for (const raw of script.split(/\r?\n/)) {
+    const prefix = splitNamePrefix(raw);
+    if (!prefix || !looksLikeName(prefix.name)) continue;
+    if (characters.some((c) => sameName(c.name, prefix.name))) continue;
+    if (found.some((n) => sameName(n, prefix.name))) continue;
+    found.push(prefix.name);
+  }
+  return found;
+}
+
+/** "[description] " for a "none" character with a description, else "". */
+export function characterVoiceHint(character: DramaCharacter | undefined): string {
+  if (!character || character.voice !== "none") return "";
+  const tag = toDramaTag(character.description);
+  return tag ? `${tag} ` : "";
+}
+
+/** Drama 3 text of replies with speaker tags; a "none" character's description at its first reply. */
+export function sceneText(replies: SceneReply[], characters: DramaCharacter[]): string {
+  const described = new Set<number>();
+  return replies
+    .map((reply) => {
+      const hint = described.has(reply.character) ? "" : characterVoiceHint(characters[reply.character]);
+      described.add(reply.character);
+      return `<|speaker:${reply.character}|>${hint}${reply.text}`;
+    })
+    .join(" ");
+}
+
+/** Replies grouped into parts of at most about `maxChars` characters, never splitting a reply. */
+export function sceneParts(replies: SceneReply[], maxChars = DRAMA_SCENE_PART_CHARS): SceneReply[][] {
+  const parts: SceneReply[][] = [];
+  let current: SceneReply[] = [];
+  let size = 0;
+  for (const reply of replies) {
+    if (current.length > 0 && size + reply.text.length > maxChars) {
+      parts.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(reply);
+    size += reply.text.length;
+  }
+  if (current.length > 0) parts.push(current);
+  return parts;
+}
+
+/** Short stable key of a text (FNV-1a), for naming a shared voice file. */
+export function shortHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}

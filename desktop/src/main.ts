@@ -48,6 +48,17 @@ import {
   DRAMA_LIBRARY_PATH_STORAGE_KEY,
   DRAMA_MODEL_PATH_STORAGE_KEY,
   DRAMA_SELECTED_VOICE_STORAGE_KEY,
+  DRAMA_MAX_SECONDS_LIMIT,
+  DRAMA_MAX_SPEAKERS,
+  characterVoiceHint,
+  loadDramaScene,
+  newDramaCharacter,
+  parseScene,
+  saveDramaScene,
+  sceneNameCandidates,
+  sceneParts,
+  sceneText,
+  shortHash,
   dramaOptionsFromRequest,
   dramaRequestOptions,
   getEngineKind,
@@ -63,7 +74,15 @@ import {
   toDramaTag,
   voiceNameFromPath,
 } from "./drama";
-import type { DramaOptions, DramaRemark, DramaVoiceFile, EngineKind } from "./drama";
+import type {
+  DramaCharacter,
+  DramaOptions,
+  DramaRemark,
+  DramaScene,
+  DramaVoiceFile,
+  EngineKind,
+  SceneReply,
+} from "./drama";
 import {
   cssVar,
   el,
@@ -3985,6 +4004,7 @@ function jobLabel(job: GenerationJob): string {
   if (payload.kind === "tts") return payload.text.slice(0, 48) || "Plain TTS";
   if (payload.kind === "clone") return payload.text.slice(0, 48) || payload.refName || "Voice clone";
   if (payload.kind === "finish") return payload.text.slice(0, 48) || payload.refName || "Continue speech";
+  if (payload.kind === "scene") return payload.script.replace(/\s+/g, " ").trim().slice(0, 48) || "Scene";
   return payload.lines.map((line) => line.text.trim()).filter(Boolean).join(" / ").slice(0, 48) || "Multi speaker";
 }
 
@@ -4112,6 +4132,15 @@ function loadQueuedJobForEdit(job: GenerationJob): void {
     el<HTMLTextAreaElement>("#finish-transcript").value = payload.transcript;
     el<HTMLInputElement>("#finish-normalize-ref").checked = payload.normalize;
     el<HTMLInputElement>("#finish-include-source").checked = payload.includeSource;
+  } else if (payload.kind === "scene") {
+    dramaScene = {
+      characters: payload.characters.map((c) => ({ ...c })),
+      script: payload.script,
+      mode: payload.sceneMode,
+      pause: payload.pause,
+    };
+    saveDramaScene(dramaScene);
+    renderDramaScene();
   } else {
     multiSpeakers.splice(0, multiSpeakers.length, ...payload.speakers.map(cloneMultiSpeaker));
     multiLines.splice(0, multiLines.length, ...payload.lines.map(cloneMultiLine));
@@ -4214,6 +4243,8 @@ function finishGeneration(success: boolean, message: string, tone?: "success" | 
   activeGenerationJob = null;
   updateGenerationControls();
   renderQueuePanel();
+  // Scene lines' Redo buttons wait for the generation to end.
+  if (sceneLines.length > 0) renderSceneLineResults();
   if (message) showToast(message, tone || (success ? "success" : "error"));
 }
 
@@ -4539,7 +4570,7 @@ let dramaLoading = false;
 let dramaVoiceFiles = loadDramaVoiceFiles();
 
 /** Tabs that only the Higgs engine can do so far. */
-const HIGGS_ONLY_MODES: Mode[] = ["clone", "finish", "multi", "batch"];
+const HIGGS_ONLY_MODES: Mode[] = ["clone", "finish", "batch"];
 
 function applyEngineKind(kind: EngineKind): void {
   activeEngine = kind;
@@ -4551,6 +4582,9 @@ function applyEngineKind(kind: EngineKind): void {
   el("#model-panel").classList.toggle("hidden", drama);
   for (const item of document.querySelectorAll<HTMLElement>(".drama-only")) {
     item.classList.toggle("hidden", !drama);
+  }
+  for (const item of document.querySelectorAll<HTMLElement>(".higgs-only")) {
+    item.classList.toggle("hidden", drama);
   }
   for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
     if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
@@ -4758,6 +4792,8 @@ function renderDramaVoiceSelect(): void {
   const current = localStorage.getItem(DRAMA_SELECTED_VOICE_STORAGE_KEY) || select.value || "none";
   select.innerHTML = "";
   for (const name of dramaVoiceNames()) {
+    // Shared voices of scenes are for the scene tab, not for a single voice.
+    if (name.startsWith(SCENE_VOICE_PREFIX)) continue;
     const option = document.createElement("option");
     option.value = name;
     option.textContent = name === "none" ? t("none (the model chooses)") : name;
@@ -4948,16 +4984,45 @@ function setDramaLastSeed(seed: number): void {
 
 let dramaRemarks: DramaRemark[] = loadDramaRemarks();
 
-function insertCustomDramaTag(): void {
-  const input = el<HTMLInputElement>("#drama-custom-tag");
+/** The text box a remark panel (.drama-remarks with data-target) inserts into. */
+function remarksTarget(container: HTMLElement): HTMLTextAreaElement {
+  return el<HTMLTextAreaElement>(container.dataset.target || "#tts-text");
+}
+
+function insertCustomDramaTag(container: HTMLElement): void {
+  const input = container.querySelector<HTMLInputElement>(".custom-tag-input")!;
   const tag = toDramaTag(input.value);
   if (!tag) {
     showToast(t("Type a direction first, e.g. tired, hoarse voice"), "warning");
     input.focus();
     return;
   }
-  insertTagAtCursor(el<HTMLTextAreaElement>("#tts-text"), tag);
+  insertTagAtCursor(remarksTarget(container), tag);
   input.value = "";
+}
+
+/** Builds a remark panel once: the buttons bar and the own-tag row. */
+function initRemarksPanel(container: HTMLElement): void {
+  container.innerHTML = `
+    <div class="remark-bar" aria-label="${escapeHtml(t("Remarks"))}"></div>
+    <div class="custom-tag-row">
+      <input class="text-input custom-tag-input" type="text" spellcheck="false"
+        placeholder="${escapeHtml(t("Your own direction in English, e.g. tired, hoarse voice"))}" />
+      <button class="compact-button custom-tag-insert" type="button" title="${escapeHtml(t("Insert it in square brackets at the cursor"))}">${escapeHtml(t("Insert [ ]"))}</button>
+      <button class="compact-button remarks-edit-btn" type="button">${escapeHtml(t("✎ Edit buttons"))}</button>
+    </div>
+  `;
+  const insert = container.querySelector<HTMLButtonElement>(".custom-tag-insert")!;
+  // Keep the text box's cursor: a mousedown on the button would take the focus away.
+  insert.addEventListener("mousedown", (event) => event.preventDefault());
+  insert.addEventListener("click", () => insertCustomDramaTag(container));
+  container.querySelector<HTMLInputElement>(".custom-tag-input")!.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      insertCustomDramaTag(container);
+    }
+  });
+  container.querySelector(".remarks-edit-btn")!.addEventListener("click", openRemarksEditor);
 }
 
 function renderRemarksEditor(): void {
@@ -5071,39 +5136,56 @@ function initRemarksEditor(): void {
 }
 
 function renderDramaRemarks(): void {
-  const bar = el<HTMLElement>("#drama-remarks");
-  bar.innerHTML = "";
-  for (const remark of dramaRemarks) {
-    if (!toDramaTag(remark.tag)) continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `compact-button remark-button ${remark.kind || "remark"}`;
-    const tag = toDramaTag(remark.tag);
-    button.textContent = t(remark.label).trim() || tag;
-    button.title = remark.tip ? `${tag}: ${t(remark.tip)}` : tag;
-    // Keep the textarea's cursor: a mousedown on the button would take the focus away.
-    button.addEventListener("mousedown", (event) => event.preventDefault());
-    button.addEventListener("click", () => insertTagAtCursor(el<HTMLTextAreaElement>("#tts-text"), tag));
-    bar.appendChild(button);
+  for (const container of document.querySelectorAll<HTMLElement>(".drama-remarks")) {
+    if (!container.querySelector(".remark-bar")) initRemarksPanel(container);
+    const bar = container.querySelector<HTMLElement>(".remark-bar")!;
+    bar.innerHTML = "";
+    for (const remark of dramaRemarks) {
+      const tag = toDramaTag(remark.tag);
+      if (!tag) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `compact-button remark-button ${remark.kind || "remark"}`;
+      button.textContent = t(remark.label).trim() || tag;
+      button.title = remark.tip ? `${tag}: ${t(remark.tip)}` : tag;
+      // Keep the text box's cursor: a mousedown on the button would take the focus away.
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", () => insertTagAtCursor(remarksTarget(container), tag));
+      bar.appendChild(button);
+    }
   }
 }
 
 // ─── Generation ───
 
 function captureDramaGenerationJob(overrideText?: string): GenerationJob {
-  if (currentMode !== "tts") throw new Error(t("Drama 3 works in the TTS tab for now"));
-  const text = (overrideText ?? el<HTMLTextAreaElement>("#tts-text").value).trim();
-  if (!text) throw new Error(t("Please enter text to speak"));
+  if (currentMode !== "tts" && currentMode !== "multi") throw new Error(t("Drama 3 works in the TTS tab for now"));
   const options = readDramaOptionsFromUi();
   saveDramaOptions(options);
+  let payload: GenerationJob["payload"];
+  if (currentMode === "multi") {
+    const problem = sceneProblem();
+    if (problem) throw new Error(problem);
+    payload = {
+      kind: "scene",
+      characters: dramaScene.characters.map((c) => ({ ...c })),
+      script: dramaScene.script,
+      sceneMode: dramaScene.mode,
+      pause: dramaScene.pause,
+    };
+  } else {
+    const text = (overrideText ?? el<HTMLTextAreaElement>("#tts-text").value).trim();
+    if (!text) throw new Error(t("Please enter text to speak"));
+    payload = { kind: "tts", text };
+  }
   const job: GenerationJob = {
     id: nextId("queue"),
-    mode: "tts",
+    mode: currentMode,
     label: "",
     createdAt: Date.now(),
     options: dramaRequestOptions(options),
     deliveryPrefix: "",
-    payload: { kind: "tts", text },
+    payload,
     engine: "drama",
     dramaVoice: el<HTMLSelectElement>("#drama-voice").value || "none",
   };
@@ -5112,10 +5194,12 @@ function captureDramaGenerationJob(overrideText?: string): GenerationJob {
 }
 
 async function generateDramaJob(job: GenerationJob): Promise<GenerationResult> {
-  if (job.payload.kind !== "tts") throw new Error(t("Drama 3 works in the TTS tab for now"));
   if (!dramaStatus.modelLoaded && !(await ensureDramaLoaded())) {
     throw new Error(t("The Drama 3 model is not loaded"));
   }
+  dramaPartLabel = "";
+  if (job.payload.kind === "scene") return generateDramaScene(job, job.payload);
+  if (job.payload.kind !== "tts") throw new Error(t("Drama 3 works in the TTS tab for now"));
   const result = await invoke<DramaGenerationResult>("drama_generate", {
     request: {
       text: job.payload.text,
@@ -5170,15 +5254,7 @@ function initDramaEngine(): void {
 
   renderDramaRemarks();
   initRemarksEditor();
-  el("#drama-remarks-edit").addEventListener("click", openRemarksEditor);
-  el("#drama-custom-tag-insert").addEventListener("mousedown", (event) => event.preventDefault());
-  el("#drama-custom-tag-insert").addEventListener("click", insertCustomDramaTag);
-  el<HTMLInputElement>("#drama-custom-tag").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      insertCustomDramaTag();
-    }
-  });
+  initDramaScene();
 
   applyDramaOptionsToUi(loadDramaOptions());
   const persist = () => {
@@ -5212,6 +5288,375 @@ function initDramaEngine(): void {
   applyEngineKind(activeEngine);
   renderDramaStatus();
   void initDramaPaths();
+}
+
+// ─── Scene (Multi Speaker tab with Drama 3) ───
+
+const SCENE_VOICE_PREFIX = "scene-";
+const SCENE_COLORS = ["#25b8ab", "#e0803a", "#7a6ff0", "#d8556f", "#48a860", "#c9a227", "#3b82f6", "#b45bd6"];
+
+type SceneLineResult = { reply: SceneReply; result: DramaGenerationResult };
+
+let dramaScene: DramaScene = loadDramaScene();
+let dramaPartLabel = "";
+/** Line-by-line takes of the last scene, for per-line playback and redo. */
+let sceneLines: SceneLineResult[] = [];
+let sceneLinesPause = 0.35;
+let sceneLinesCharacters: DramaCharacter[] = [];
+let sceneLineBusy = -1;
+const sceneLinePlayer = new Audio();
+let sceneLinePlayerUrl = "";
+let sceneLinePlaying = -1;
+
+function persistDramaScene(): void {
+  saveDramaScene(dramaScene);
+}
+
+function sceneColor(index: number): string {
+  return SCENE_COLORS[index % SCENE_COLORS.length];
+}
+
+/** What stops the scene from being generated, or "" when it is ready. */
+function sceneProblem(): string {
+  const characters = dramaScene.characters;
+  if (characters.length === 0) return t("Add at least one character");
+  if (characters.length > DRAMA_MAX_SPEAKERS) return t("Drama 3 takes at most 16 characters in a scene");
+  if (characters.some((c) => !c.name.trim())) return t("Every character needs a name");
+  const { replies, unknown } = parseScene(dramaScene.script, characters);
+  if (unknown.length > 0) return `${t("Not in the character list")}: ${unknown.join(", ")}`;
+  if (replies.length === 0) return t("Write the script: one reply per line, “Name: text”");
+  return "";
+}
+
+function renderSceneCharacters(): void {
+  const list = el<HTMLElement>("#scene-characters");
+  list.innerHTML = "";
+  const voices = ["none", ...Array.from(new Set(dramaVoiceSources().map((v) => v.name)))];
+  dramaScene.characters.forEach((character, index) => {
+    const row = document.createElement("div");
+    row.className = "scene-character-row";
+    row.dataset.index = String(index);
+    const options = [...voices];
+    if (!options.includes(character.voice)) options.push(character.voice);
+    row.innerHTML = `
+      <span class="scene-speaker-badge" style="--speaker-color:${sceneColor(index)}" title="${escapeHtml(t("Speaker number in Drama 3"))}">${index}</span>
+      <input class="text-input" data-field="name" type="text" placeholder="${escapeHtml(t("Name"))}" />
+      <select class="select-input" data-field="voice">
+        ${options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name === "none" ? t("none (the model chooses)") : voices.includes(name) ? name : `${name} (${t("not found")})`)}</option>`).join("")}
+      </select>
+      <input class="text-input" data-field="description" type="text" spellcheck="false"
+        placeholder="${escapeHtml(t("Voice description in English, e.g. calm elderly man, low voice"))}" />
+      <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
+    `;
+    row.querySelector<HTMLInputElement>('[data-field="name"]')!.value = character.name;
+    row.querySelector<HTMLSelectElement>('[data-field="voice"]')!.value = character.voice;
+    const description = row.querySelector<HTMLInputElement>('[data-field="description"]')!;
+    description.value = character.description;
+    description.classList.toggle("hidden", character.voice !== "none");
+    list.appendChild(row);
+  });
+  el<HTMLButtonElement>("#scene-add-character").disabled = dramaScene.characters.length >= DRAMA_MAX_SPEAKERS;
+}
+
+function renderScenePreview(): void {
+  const preview = el<HTMLElement>("#scene-preview");
+  const { replies, unknown } = parseScene(dramaScene.script, dramaScene.characters);
+  const candidates = sceneNameCandidates(dramaScene.script, dramaScene.characters);
+  el<HTMLButtonElement>("#scene-detect-characters").disabled = candidates.length === 0;
+  const parts: string[] = [];
+  if (unknown.length > 0) {
+    parts.push(`<p class="scene-warning">${escapeHtml(t("Not in the character list"))}: ${escapeHtml(unknown.join(", "))}. ${escapeHtml(t("Add them, or such lines are read as text."))}</p>`);
+  }
+  for (const reply of replies.slice(0, 200)) {
+    const character = dramaScene.characters[reply.character];
+    const name = character?.name || "?";
+    const text = reply.text.length > 160 ? `${reply.text.slice(0, 160)}…` : reply.text;
+    parts.push(`<div class="scene-preview-line"><strong style="color:${sceneColor(reply.character)}">${escapeHtml(name)}</strong><span>${escapeHtml(text)}</span></div>`);
+  }
+  if (replies.length > 0) {
+    const chars = replies.reduce((sum, r) => sum + r.text.length, 0);
+    const scenePartsCount = sceneParts(replies).length;
+    parts.unshift(`<p class="input-hint">${replies.length} ${escapeHtml(t("replies"))} · ${chars} ${escapeHtml(t("characters of text"))}${dramaScene.mode === "scene" && scenePartsCount > 1 ? ` · ${escapeHtml(t("parts"))}: ${scenePartsCount}` : ""}</p>`);
+  }
+  preview.innerHTML = parts.join("");
+}
+
+function renderSceneMode(): void {
+  const lines = dramaScene.mode === "lines";
+  el("#scene-mode-scene").classList.toggle("active", !lines);
+  el("#scene-mode-lines").classList.toggle("active", lines);
+  el("#scene-pause-row").classList.toggle("hidden", !lines);
+  el<HTMLInputElement>("#scene-pause").value = String(dramaScene.pause);
+  el("#scene-val-pause").textContent = dramaScene.pause.toFixed(2);
+  setText("#scene-mode-hint", lines
+    ? t("Each reply on its own, with its character's voice: every line gets a player and a Redo button, and the lines are joined with the pause.")
+    : t("The whole scene in one request: intonation and pauses between replies sound more natural. A long scene is split into parts of about 45 s."));
+}
+
+function renderDramaScene(): void {
+  el<HTMLTextAreaElement>("#scene-script").value = dramaScene.script;
+  renderSceneCharacters();
+  renderScenePreview();
+  renderSceneMode();
+}
+
+function renderSceneLineResults(): void {
+  const section = el<HTMLElement>("#scene-results");
+  const list = el<HTMLElement>("#scene-results-list");
+  section.classList.toggle("hidden", sceneLines.length === 0);
+  list.innerHTML = "";
+  sceneLines.forEach((line, index) => {
+    const character = sceneLinesCharacters[line.reply.character];
+    const row = document.createElement("div");
+    row.className = "scene-result-row";
+    row.dataset.index = String(index);
+    const busy = sceneLineBusy === index;
+    row.innerHTML = `
+      <button class="ref-play" data-action="play" type="button" aria-label="${escapeHtml(t("Play"))}">${sceneLinePlaying === index ? "⏸" : "▶"}</button>
+      <span class="scene-result-main">
+        <strong style="color:${sceneColor(line.reply.character)}">${escapeHtml(character?.name || "?")}</strong>
+        <span>${escapeHtml(line.reply.text.length > 140 ? `${line.reply.text.slice(0, 140)}…` : line.reply.text)}</span>
+      </span>
+      <span class="scene-result-meta">${line.result.seconds.toFixed(1)} ${escapeHtml(t("s"))} · seed ${line.result.seed}</span>
+      <button class="compact-button" data-action="redo" type="button" ${sceneLineBusy >= 0 || isGenerating ? "disabled" : ""}>${escapeHtml(busy ? t("Generating…") : t("↻ Redo"))}</button>
+    `;
+    list.appendChild(row);
+  });
+}
+
+async function playSceneLine(index: number): Promise<void> {
+  if (sceneLinePlaying === index) {
+    sceneLinePlayer.pause();
+    sceneLinePlaying = -1;
+    renderSceneLineResults();
+    return;
+  }
+  const line = sceneLines[index];
+  if (!line) return;
+  if (sceneLinePlayerUrl) URL.revokeObjectURL(sceneLinePlayerUrl);
+  sceneLinePlayerUrl = URL.createObjectURL(await base64ToBlobAsync(line.result.wavBase64, "audio/wav"));
+  sceneLinePlayer.src = sceneLinePlayerUrl;
+  sceneLinePlayer.volume = audioPlayer.volume;
+  sceneLinePlaying = index;
+  renderSceneLineResults();
+  sceneLinePlayer.onended = () => {
+    sceneLinePlaying = -1;
+    renderSceneLineResults();
+  };
+  await sceneLinePlayer.play().catch(() => {
+    sceneLinePlaying = -1;
+    renderSceneLineResults();
+  });
+}
+
+/** The scene's lines joined with the pause, shown as the tab's output. */
+function showJoinedSceneLines(): GenerationResult {
+  const joined = concatenateWavResults(sceneLines.map((l) => l.result), sceneLinesPause);
+  return joined;
+}
+
+function sceneLineRequest(reply: SceneReply, characters: DramaCharacter[]): { text: string; voice: string } {
+  const character = characters[reply.character];
+  const loaded = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+  const voice = character && character.voice !== "none" && loaded.has(character.voice) ? character.voice : "none";
+  if (character && character.voice !== "none" && voice === "none") {
+    throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
+  }
+  return { text: `${characterVoiceHint(character)}${reply.text}`, voice };
+}
+
+async function redoSceneLine(index: number): Promise<void> {
+  const line = sceneLines[index];
+  if (!line || sceneLineBusy >= 0) return;
+  if (isGenerating) {
+    showToast(t("Wait for the current generation to finish"), "warning");
+    return;
+  }
+  sceneLineBusy = index;
+  renderSceneLineResults();
+  try {
+    if (!dramaStatus.modelLoaded && !(await ensureDramaLoaded())) return;
+    const { text, voice } = sceneLineRequest(line.reply, sceneLinesCharacters);
+    // A new take: same settings, a new random seed.
+    const options = dramaRequestOptions({ ...readDramaOptionsFromUi(), seed: "" });
+    const result = await invoke<DramaGenerationResult>("drama_generate", {
+      request: { text, voice, options, streamPlayback: false },
+    });
+    sceneLines[index] = { reply: line.reply, result };
+    setDramaLastSeed(result.seed);
+    const joined = showJoinedSceneLines();
+    showOutput(joined, "multi");
+    showToast(`${t("Line redone")}: ${index + 1}`);
+  } catch (e) {
+    showToast(`${t("Generation failed")}: ${e}`, "error");
+  } finally {
+    sceneLineBusy = -1;
+    renderSceneLineResults();
+  }
+}
+
+/** The shared voice file of the characters that have voices, added to the model; "none" if none has. */
+async function prepareSceneVoice(characters: DramaCharacter[]): Promise<string> {
+  const sources = dramaVoiceSources();
+  const parts = characters
+    .map((character, speaker) => ({ character, speaker }))
+    .filter(({ character }) => character.voice !== "none")
+    .map(({ character, speaker }) => {
+      const source = sources.find((s) => s.name === character.voice);
+      if (!source) throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
+      return { name: source.name, path: source.path, speaker };
+    });
+  if (parts.length === 0) return "none";
+  const key = shortHash(parts.map((p) => `${p.speaker}:${p.name}:${p.path}`).join("|"));
+  const name = `${SCENE_VOICE_PREFIX}${key}`;
+  if (dramaStatus.modelInfo?.voices.some((v) => v.name === name)) return name;
+  const target = await invoke<{ path: string }>("drama_scene_voice_path", { key });
+  await invoke("drama_voice_make", {
+    request: {
+      references: [],
+      voices: parts.map((p) => ({ path: p.path, speaker: p.speaker })),
+      outPath: target.path,
+      modelPath: null,
+    },
+    addAs: name,
+  });
+  await refreshDramaStatus();
+  return name;
+}
+
+async function generateDramaScene(
+  job: GenerationJob,
+  payload: Extract<GenerationJob["payload"], { kind: "scene" }>,
+): Promise<GenerationResult> {
+  const characters = payload.characters;
+  const { replies, unknown } = parseScene(payload.script, characters);
+  if (unknown.length > 0) throw new Error(`${t("Not in the character list")}: ${unknown.join(", ")}`);
+  if (replies.length === 0) throw new Error(t("Write the script: one reply per line, “Name: text”"));
+  const bar = el<HTMLElement>("#gen-progress-bar");
+  bar.classList.remove("indeterminate");
+
+  if (payload.sceneMode === "lines") {
+    sceneLines = [];
+    sceneLinesPause = payload.pause;
+    sceneLinesCharacters = characters.map((c) => ({ ...c }));
+    for (let i = 0; i < replies.length; i++) {
+      dramaPartLabel = `${t("Line")} ${i + 1}/${replies.length} · `;
+      setProgress("#gen-progress-bar", i, replies.length);
+      const { text, voice } = sceneLineRequest(replies[i], characters);
+      const result = await invoke<DramaGenerationResult>("drama_generate", {
+        request: { text, voice, options: job.options, streamPlayback: false },
+      });
+      setDramaLastSeed(result.seed);
+      sceneLines.push({ reply: replies[i], result });
+      renderSceneLineResults();
+    }
+    setProgress("#gen-progress-bar", 1, 1);
+    return showJoinedSceneLines();
+  }
+
+  // Whole scene: one shared voice file, the text in parts under the 95 s limit.
+  sceneLines = [];
+  renderSceneLineResults();
+  dramaPartLabel = `${t("Preparing the voices…")} `;
+  const voice = await prepareSceneVoice(characters);
+  const parts = sceneParts(replies);
+  const options = { ...job.options, max_seconds: DRAMA_MAX_SECONDS_LIMIT };
+  const results: DramaGenerationResult[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    dramaPartLabel = parts.length > 1 ? `${t("Part")} ${i + 1}/${parts.length} · ` : "";
+    setProgress("#gen-progress-bar", i, parts.length);
+    const result = await invoke<DramaGenerationResult>("drama_generate", {
+      request: {
+        text: sceneText(parts[i], characters),
+        voice,
+        options,
+        // Live playback only makes sense for one continuous request.
+        streamPlayback: streamPlayback && parts.length === 1,
+      },
+    });
+    setDramaLastSeed(result.seed);
+    if (result.stop === "max_seconds") {
+      window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
+    }
+    results.push(result);
+  }
+  setProgress("#gen-progress-bar", 1, 1);
+  return results.length === 1 ? results[0] : concatenateWavResults(results, 0.3);
+}
+
+function initDramaScene(): void {
+  const list = el<HTMLElement>("#scene-characters");
+  list.addEventListener("input", (event) => {
+    const input = event.target as HTMLInputElement | HTMLSelectElement;
+    const index = Number(input.closest<HTMLElement>(".scene-character-row")?.dataset.index);
+    const character = dramaScene.characters[index];
+    if (!character) return;
+    if (input.dataset.field === "name") character.name = input.value;
+    if (input.dataset.field === "description") character.description = input.value;
+    if (input.dataset.field === "voice") {
+      character.voice = input.value;
+      renderSceneCharacters();
+    }
+    persistDramaScene();
+    renderScenePreview();
+  });
+  list.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action="remove"]');
+    if (!button) return;
+    const index = Number(button.closest<HTMLElement>(".scene-character-row")?.dataset.index);
+    dramaScene.characters.splice(index, 1);
+    persistDramaScene();
+    renderSceneCharacters();
+    renderScenePreview();
+  });
+  el("#scene-add-character").addEventListener("click", () => {
+    if (dramaScene.characters.length >= DRAMA_MAX_SPEAKERS) return;
+    dramaScene.characters.push(newDramaCharacter());
+    persistDramaScene();
+    renderSceneCharacters();
+    renderScenePreview();
+    const names = list.querySelectorAll<HTMLInputElement>('[data-field="name"]');
+    names[names.length - 1]?.focus();
+  });
+  el("#scene-detect-characters").addEventListener("click", () => {
+    const room = DRAMA_MAX_SPEAKERS - dramaScene.characters.length;
+    const names = sceneNameCandidates(dramaScene.script, dramaScene.characters).slice(0, Math.max(0, room));
+    for (const name of names) dramaScene.characters.push(newDramaCharacter(name));
+    persistDramaScene();
+    renderSceneCharacters();
+    renderScenePreview();
+    if (names.length > 0) showToast(`${t("Characters added")}: ${names.join(", ")}`);
+  });
+  el<HTMLTextAreaElement>("#scene-script").addEventListener("input", (event) => {
+    dramaScene.script = (event.target as HTMLTextAreaElement).value;
+    persistDramaScene();
+    renderScenePreview();
+  });
+  el("#scene-mode-scene").addEventListener("click", () => {
+    dramaScene.mode = "scene";
+    persistDramaScene();
+    renderSceneMode();
+    renderScenePreview();
+  });
+  el("#scene-mode-lines").addEventListener("click", () => {
+    dramaScene.mode = "lines";
+    persistDramaScene();
+    renderSceneMode();
+    renderScenePreview();
+  });
+  el<HTMLInputElement>("#scene-pause").addEventListener("input", (event) => {
+    dramaScene.pause = parseFloat((event.target as HTMLInputElement).value);
+    el("#scene-val-pause").textContent = dramaScene.pause.toFixed(2);
+    persistDramaScene();
+  });
+  el("#scene-results-list").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!button) return;
+    const index = Number(button.closest<HTMLElement>(".scene-result-row")?.dataset.index);
+    if (button.dataset.action === "play") void playSceneLine(index);
+    else void redoSceneLine(index);
+  });
+  renderDramaScene();
 }
 
 /** Fills empty paths with the defaults found on disk and loads speech.dll (not the model). */
@@ -7156,7 +7601,7 @@ async function initEventListeners(): Promise<void> {
 
   await listen<{ seconds: number }>("drama-progress", (event) => {
     if (!isGenerating || activeGenerationJob?.engine !== "drama") return;
-    setGenerationElapsedLabel(`${t("Audio ready")}: ${event.payload.seconds.toFixed(1)} ${t("s")} · ${t("elapsed")}`);
+    setGenerationElapsedLabel(`${dramaPartLabel}${t("Audio ready")}: ${event.payload.seconds.toFixed(1)} ${t("s")} · ${t("elapsed")}`);
   });
 
   await listen<ProgressEvent>("generation-progress", (event) => {

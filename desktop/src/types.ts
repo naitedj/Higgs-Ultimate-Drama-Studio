@@ -244,7 +244,14 @@ export type GenerationJob = {
     | { kind: "tts"; text: string }
     | { kind: "clone"; text: string; refPath: string; refName: string; refText?: string; normalize: boolean; personaId?: string }
     | { kind: "finish"; text: string; refPath: string; refName: string; transcript: string; normalize: boolean; includeSource: boolean; personaId?: string }
-    | { kind: "multi"; speakers: MultiSpeaker[]; lines: MultiLine[] };
+    | { kind: "multi"; speakers: MultiSpeaker[]; lines: MultiLine[] }
+    | {
+        kind: "scene";
+        characters: Array<{ id: string; name: string; voice: string; description: string }>;
+        script: string;
+        sceneMode: "scene" | "lines";
+        pause: number;
+      };
 };
 
 export type SpeakerPersona = {

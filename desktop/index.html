@@ -203,13 +203,7 @@
               <p class="input-hint">“none”: the model chooses the voice. A description at the very start of the text, like [deep, low male voice], sets it.</p>
             </div>
             <div class="input-group">
-              <div class="remark-bar drama-only hidden" id="drama-remarks" aria-label="Remarks"></div>
-              <div class="custom-tag-row drama-only hidden" id="drama-custom-tag-row">
-                <input id="drama-custom-tag" class="text-input" type="text" spellcheck="false"
-                  placeholder="Your own direction in English, e.g. tired, hoarse voice" />
-                <button id="drama-custom-tag-insert" class="compact-button" type="button" title="Insert it in square brackets at the cursor">Insert [ ]</button>
-                <button id="drama-remarks-edit" class="compact-button" type="button">✎ Edit buttons</button>
-              </div>
+              <div class="drama-remarks drama-only hidden" data-target="#tts-text"></div>
               <label for="tts-text" class="field-label">Text to speak</label>
               <textarea id="tts-text" class="text-area" rows="6"
                 placeholder="Type or paste text here…"></textarea>
@@ -410,7 +404,52 @@
 
           <!-- ═══ Multi Speaker mode ═══ -->
           <div class="mode-content hidden" id="mode-multi">
-            <section class="workflow-section">
+            <!-- Drama 3 scene: characters → <|speaker:N|>, one shared voice file -->
+            <div class="drama-only hidden" id="drama-scene">
+              <section class="workflow-section">
+                <div class="section-head">
+                  <h3>Characters</h3>
+                  <div class="identity-actions">
+                    <button id="scene-detect-characters" class="compact-button" type="button">Add names from the script</button>
+                    <button id="scene-add-character" class="compact-button primary" type="button">+ Character</button>
+                  </div>
+                </div>
+                <div id="scene-characters" class="scene-characters"></div>
+                <p class="input-hint">Voice: a Drama 3 voice from the Speaker Gallery or an added file, or “none” with a description in English, e.g. calm elderly man, low voice. Up to 16 characters.</p>
+              </section>
+              <section class="workflow-section">
+                <div class="section-head">
+                  <h3>Script</h3>
+                </div>
+                <div class="drama-remarks" data-target="#scene-script"></div>
+                <textarea id="scene-script" class="text-area" rows="10" spellcheck="false"
+                  placeholder="Narrator: It was a quiet evening.&#10;Masha: [whispers] Are you asleep?&#10;Petya: No."></textarea>
+                <p class="input-hint">One reply per line: “Name: text”. A line without a name continues the previous reply. Remarks in square brackets work as in TTS.</p>
+                <div id="scene-preview" class="scene-preview"></div>
+              </section>
+              <section class="workflow-section">
+                <div class="scene-mode-row">
+                  <span class="field-label">Generate</span>
+                  <div class="segmented">
+                    <button id="scene-mode-scene" type="button">Whole scene</button>
+                    <button id="scene-mode-lines" type="button">Line by line</button>
+                  </div>
+                  <label class="slider-label" id="scene-pause-row">
+                    <span class="slider-name">Pause between lines</span>
+                    <input type="range" id="scene-pause" min="0" max="1.5" step="0.05" value="0.35" />
+                    <span class="slider-value" id="scene-val-pause">0.35</span>
+                  </label>
+                </div>
+                <p id="scene-mode-hint" class="input-hint"></p>
+              </section>
+              <section id="scene-results" class="workflow-section hidden">
+                <div class="section-head">
+                  <h3>Lines</h3>
+                </div>
+                <div id="scene-results-list" class="scene-results-list"></div>
+              </section>
+            </div>
+            <section class="workflow-section higgs-only">
               <div class="section-head">
                 <h3>Speakers</h3>
                 <div class="speaker-tag-row">
@@ -424,7 +463,7 @@
               <div id="speaker-library" class="speaker-library"></div>
             </section>
 
-            <section class="workflow-section">
+            <section class="workflow-section higgs-only">
               <div class="section-head">
                 <h3>Speech Lines</h3>
               </div>
