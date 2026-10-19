@@ -502,6 +502,99 @@ export const RU: Record<string, string> = {
   "video": "видео",
   "Video has no decodable audio track, or the container is unsupported (try mp4).":
     "В видео нет декодируемой аудиодорожки, либо контейнер не поддерживается (попробуйте mp4).",
+
+  // ── Drama 3 (speech.cpp) ──
+  "Speech engine": "Движок речи",
+  "Path to speech.dll…": "Путь к speech.dll…",
+  "Path to Drama-35B-A3B-v3-Q4_K.gguf…": "Путь к Drama-35B-A3B-v3-Q4_K.gguf…",
+  "Device": "Устройство",
+  "Auto (first GPU)": "Авто (первая видеокарта)",
+  "free": "свободно",
+  "GB": "ГБ",
+  "📁 Add voice file…": "📁 Добавить файл голоса…",
+  "Remove": "Убрать",
+  "“none”: the model chooses the voice. A description at the very start of the text, like [deep, low male voice], sets it.":
+    "«none» — голос выбирает модель. Описание в самом начале текста, например [deep, low male voice], задаёт голос.",
+  "none (the model chooses)": "none (голос выбирает модель)",
+  "Remarks": "Ремарки",
+  "▸ Drama 3 options": "▸ Настройки Drama 3",
+  "Empty: a new random seed every time. The seed used is shown below; set it here to repeat a take.":
+    "Пусто — каждый раз новый случайный seed. Использованный seed показан ниже; впишите его сюда, чтобы повторить дубль.",
+  "random": "случайный",
+  "Random seed": "Случайный seed",
+  "Last seed": "Последний seed",
+  "Keep": "Закрепить",
+  "Put the last seed into the Seed field to repeat the take": "Вписать последний seed в поле Seed, чтобы повторить дубль",
+  "Top-K": "Top-K",
+  "Default here: 4097 (no limit). The model's own 30 causes long silent stalls on pauses.":
+    "По умолчанию здесь 4097 (без ограничения). Родное значение модели 30 даёт долгие зависания-тишину на паузах.",
+  "Top-P": "Top-P",
+  "Default: 0.90. Nucleus sampling. Lower is steadier, higher is more varied.":
+    "По умолчанию 0,90. Ниже — ровнее, выше — разнообразнее.",
+  "Default: 1.00. Higher is more varied and expressive; lower is more even.":
+    "По умолчанию 1,00. Выше — живее и разнообразнее, ниже — ровнее.",
+  "Max seconds": "Макс. секунд",
+  "Default: 47.6 s, up to 95.1 s. The longest one generation may last; it stops there.":
+    "По умолчанию 47,6 с, максимум 95,1 с. Самая большая длина одной генерации: на ней озвучка обрывается.",
+  "Experts on CPU": "Эксперты на CPU",
+  "On: if the model does not fit in video memory, part of it runs on the CPU (slower). Off: refuse instead of running slowly.":
+    "Вкл.: если модель не влезает в видеопамять, часть считается на процессоре (медленнее). Выкл.: отказ вместо медленной работы.",
+  "Reset to defaults": "Сбросить по умолчанию",
+  "Loading the model into video memory, about half a minute…": "Модель загружается в видеопамять, около полуминуты…",
+  "Video memory free": "Свободно видеопамяти",
+  "of": "из",
+  "Part of the model runs on the CPU": "Часть модели считается на процессоре",
+  "threads": "потоков",
+  "generation is slower. Close programs that use the GPU and reload the model.":
+    "озвучка медленнее. Закройте программы, занимающие видеокарту, и перезагрузите модель.",
+  "The whole model is in video memory.": "Модель целиком в видеопамяти.",
+  "ready. The model loads on the first generation or with the Load button.":
+    "готов. Модель загрузится при первой озвучке или кнопкой «Загрузить модель».",
+  "Higgs model unloaded to free video memory": "Модель Higgs выгружена, чтобы освободить видеопамять",
+  "Drama 3 model unloaded to free video memory": "Модель Drama 3 выгружена, чтобы освободить видеопамять",
+  "Could not add voice": "Не удалось добавить голос",
+  "Drama 3 loaded, but part of the model runs on the CPU: generation will be slower.":
+    "Drama 3 загружена, но часть модели считается на процессоре: озвучка будет медленнее.",
+  "Drama 3 loaded": "Drama 3 загружена",
+  "Failed to load Drama 3": "Не удалось загрузить Drama 3",
+  "Loading the Drama 3 model…": "Загружаю модель Drama 3…",
+  "Voice added": "Голос добавлен",
+  "Voice saved, it will be added when the model loads": "Голос сохранён, он подключится при загрузке модели",
+  "Voice removed from the list; it leaves the model on the next load":
+    "Голос убран из списка; из модели он уйдёт при следующей загрузке",
+  "Voice removed": "Голос убран",
+  "Drama 3 works in the TTS tab for now": "Drama 3 пока работает во вкладке TTS",
+  "Please enter text to speak": "Введите текст для озвучки",
+  "The Drama 3 model is not loaded": "Модель Drama 3 не загружена",
+  "Stopped at the Max seconds limit: the end of the text may be missing.":
+    "Остановлено на пределе «Макс. секунд»: конец текста мог не прозвучать.",
+  "Seed kept: generation will repeat this take": "Seed закреплён: озвучка повторит этот дубль",
+  "Drama 3 options reset": "Настройки Drama 3 сброшены",
+  "speech.dll did not load": "speech.dll не загрузилась",
+  "Audio ready": "Готово звука",
+  "s": "с",
+  "elapsed": "прошло",
+  // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
+  "Sigh": "Вздох",
+  "Laugh": "Смех",
+  "Chuckle": "Смешок",
+  "Whisper": "Шёпот",
+  "Tender": "Нежно",
+  "Sad": "Грустно",
+  "Happy": "Радостно",
+  "Angry": "Сердито",
+  "Scared": "Испуганно",
+  "Surprised": "Удивлённо",
+  "Crying": "Плача",
+  "Excited": "Взволнованно",
+  "Shout": "Крик",
+  "Slowly": "Медленно",
+  "Male voice": "Мужской голос",
+  "Female voice": "Женский голос",
+  "Pause tags are risky: at the start of a line they can produce long silence.":
+    "Теги пауз рискованны: в начале реплики могут дать долгую тишину.",
+  "For the voice \"none\": put at the very start of the text to set the voice.":
+    "Для голоса «none»: поставьте в самое начало текста, чтобы задать голос.",
 };
 
 // Translate a dynamic string. Returns Russian when in RU mode and known,

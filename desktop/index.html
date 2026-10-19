@@ -31,6 +31,44 @@
         <!-- ─── Left rail ─── -->
         <aside class="sidebar">
 
+          <!-- Engine switch: Drama 3 (speech.cpp) or Higgs -->
+          <section class="panel engine-switch-panel" id="engine-switch-panel">
+            <div class="panel-head">
+              <h2>Speech engine</h2>
+            </div>
+            <div class="segmented engine-switch">
+              <button id="engine-pick-drama" type="button">Drama 3</button>
+              <button id="engine-pick-higgs" type="button">Higgs</button>
+            </div>
+          </section>
+
+          <!-- Drama 3 panel -->
+          <section class="panel hidden" id="drama-panel">
+            <div class="panel-head">
+              <h2>Drama 3</h2>
+              <span id="drama-state" class="mini-state">Not loaded</span>
+            </div>
+            <label class="field-label" for="drama-library-path">speech.dll</label>
+            <div class="path-row">
+              <input id="drama-library-path" type="text" class="text-input path-input" placeholder="Path to speech.dll…" spellcheck="false" />
+              <button id="drama-library-browse" class="compact-button" type="button">📁 Browse…</button>
+            </div>
+            <label class="field-label" for="drama-model-path">Model file</label>
+            <div class="path-row">
+              <input id="drama-model-path" type="text" class="text-input path-input" placeholder="Path to Drama-35B-A3B-v3-Q4_K.gguf…" spellcheck="false" />
+              <button id="drama-model-browse" class="compact-button" type="button">📁 Browse…</button>
+            </div>
+            <label class="field-label" for="drama-device">Device</label>
+            <select id="drama-device" class="select-input">
+              <option value="auto">Auto (first GPU)</option>
+            </select>
+            <div class="button-row">
+              <button id="drama-load-btn" class="compact-button primary" type="button">Load Model</button>
+              <button id="drama-unload-btn" class="compact-button" type="button" disabled>Unload</button>
+            </div>
+            <p id="drama-detail" class="input-hint"></p>
+          </section>
+
           <!-- Model panel -->
           <section class="panel" id="model-panel">
             <div class="panel-head">
@@ -155,7 +193,17 @@
 
           <!-- ═══ TTS mode ═══ -->
           <div class="mode-content" id="mode-tts">
+            <div class="input-group drama-only hidden" id="drama-voice-group">
+              <label class="field-label" for="drama-voice">Voice</label>
+              <div class="identity-select-row">
+                <select id="drama-voice" class="select-input"></select>
+                <button id="drama-voice-add-btn" class="compact-button" type="button">📁 Add voice file…</button>
+                <button id="drama-voice-remove-btn" class="compact-button" type="button" disabled>Remove</button>
+              </div>
+              <p class="input-hint">“none”: the model chooses the voice. A description at the very start of the text, like [deep, low male voice], sets it.</p>
+            </div>
             <div class="input-group">
+              <div class="remark-bar drama-only hidden" id="drama-remarks" aria-label="Remarks"></div>
               <label for="tts-text" class="field-label">Text to speak</label>
               <textarea id="tts-text" class="text-area" rows="6"
                 placeholder="Type or paste text here…"></textarea>
@@ -510,6 +558,56 @@
                 <span class="slider-value" id="val-speaker-pause">0.15</span>
                 <span class="slider-range">(0.00 – 0.80)</span>
               </label>
+            </div>
+          </details>
+
+          <!-- ═══ Drama 3 options ═══ -->
+          <details class="advanced-options drama-only hidden" id="drama-options">
+            <summary class="advanced-summary">▸ Drama 3 options</summary>
+            <div class="advanced-grid">
+              <label class="slider-label">
+                <span class="slider-name">Seed</span>
+                <span class="tip" tabindex="0" data-tip="Empty: a new random seed every time. The seed used is shown below; set it here to repeat a take.">?</span>
+                <input type="text" id="drama-seed" class="number-input" inputmode="numeric" placeholder="random" spellcheck="false" />
+                <button id="drama-seed-clear" class="dice-button" type="button" title="Random seed">🎲</button>
+              </label>
+              <div class="slider-label drama-last-seed-row">
+                <span class="slider-name">Last seed</span>
+                <span id="drama-last-seed" class="slider-value drama-last-seed">—</span>
+                <button id="drama-seed-keep" class="compact-button" type="button" disabled title="Put the last seed into the Seed field to repeat the take">Keep</button>
+              </div>
+              <label class="slider-label">
+                <span class="slider-name">Top-K</span>
+                <span class="tip" tabindex="0" data-tip="Default here: 4097 (no limit). The model's own 30 causes long silent stalls on pauses.">?</span>
+                <input type="range" id="drama-top-k" min="1" max="4097" step="1" value="4097" />
+                <span class="slider-value" id="drama-val-top-k">4097</span>
+              </label>
+              <label class="slider-label">
+                <span class="slider-name">Top-P</span>
+                <span class="tip" tabindex="0" data-tip="Default: 0.90. Nucleus sampling. Lower is steadier, higher is more varied.">?</span>
+                <input type="range" id="drama-top-p" min="0.01" max="1" step="0.01" value="0.9" />
+                <span class="slider-value" id="drama-val-top-p">0.90</span>
+              </label>
+              <label class="slider-label">
+                <span class="slider-name">Temperature</span>
+                <span class="tip" tabindex="0" data-tip="Default: 1.00. Higher is more varied and expressive; lower is more even.">?</span>
+                <input type="range" id="drama-temperature" min="0.05" max="2" step="0.05" value="1" />
+                <span class="slider-value" id="drama-val-temperature">1.00</span>
+              </label>
+              <label class="slider-label">
+                <span class="slider-name">Max seconds</span>
+                <span class="tip" tabindex="0" data-tip="Default: 47.6 s, up to 95.1 s. The longest one generation may last; it stops there.">?</span>
+                <input type="range" id="drama-max-seconds" min="5" max="95.1" step="0.1" value="47.6" />
+                <span class="slider-value" id="drama-val-max-seconds">47.6</span>
+              </label>
+              <label class="slider-label">
+                <span class="slider-name">Experts on CPU</span>
+                <span class="tip" tabindex="0" data-tip="On: if the model does not fit in video memory, part of it runs on the CPU (slower). Off: refuse instead of running slowly.">?</span>
+                <label class="toggle-switch"><input type="checkbox" id="drama-experts-on-cpu" checked /><span class="toggle-slider"></span></label>
+              </label>
+              <div class="slider-label">
+                <button id="drama-options-reset" class="compact-button" type="button">Reset to defaults</button>
+              </div>
             </div>
           </details>
 

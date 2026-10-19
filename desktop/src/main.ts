@@ -43,6 +43,25 @@ import {
 } from "./audio";
 import { buildApiExample as buildApiExampleSnippet } from "./apiExamples";
 import {
+  DRAMA_DEFAULT_OPTIONS,
+  DRAMA_DEVICE_STORAGE_KEY,
+  DRAMA_LIBRARY_PATH_STORAGE_KEY,
+  DRAMA_MODEL_PATH_STORAGE_KEY,
+  DRAMA_REMARKS,
+  DRAMA_SELECTED_VOICE_STORAGE_KEY,
+  dramaOptionsFromRequest,
+  dramaRequestOptions,
+  getEngineKind,
+  insertTagAtCursor,
+  loadDramaOptions,
+  loadDramaVoiceFiles,
+  saveDramaOptions,
+  saveDramaVoiceFiles,
+  setEngineKind,
+  voiceNameFromPath,
+} from "./drama";
+import type { DramaOptions, EngineKind } from "./drama";
+import {
   cssVar,
   el,
   escapeHtml,
@@ -562,6 +581,8 @@ async function maybeShowSetupWizard(): Promise<void> {
   const modal = document.querySelector<HTMLDivElement>("#setup-wizard-modal");
   const diagnostic = document.querySelector<HTMLDivElement>("#engine-diagnostic-modal");
   if (!modal) return;
+  // The wizard checks Higgs files only; with Drama 3 it would nag about a missing engine.
+  if (activeEngine === "drama") return;
   if (localStorage.getItem(FIRST_RUN_WIZARD_STORAGE_KEY) === "true") return;
   if (setupWizardOpen) return;
   if (engineDiagnosticVisible || (diagnostic && !diagnostic.classList.contains("hidden"))) return;
@@ -1392,7 +1413,8 @@ function switchMode(mode: Mode): void {
   if (mode === "batch") refreshBatchPersonaOptions();
   if (mode === "transcript") void refreshTranscriptModelNote();
   if (mode === "transcript" || mode === "clone") void refreshVoiceCleanNote();
-  el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility);
+  el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility || activeEngine === "drama");
+  el<HTMLElement>("#drama-options").classList.toggle("hidden", isUtility || activeEngine !== "drama");
   el<HTMLElement>("#action-row").classList.toggle("hidden", isUtility);
   el<HTMLElement>("#progress-section").classList.toggle("hidden", isUtility || !isGenerating || activeGenerationJob?.mode !== mode);
   for (const item of document.querySelectorAll<HTMLElement>(".multi-only-advanced")) {
@@ -1580,6 +1602,7 @@ async function doLoadModel(): Promise<void> {
   try {
     el<HTMLButtonElement>("#load-model-btn").disabled = true;
     setText("#model-state", t("Loading…"));
+    await unloadDramaToFreeVram();
     const result = await invoke<{ success: boolean; modelInfo: { family: string; displayName: string; weightType: string } }>(
       "load_model",
       {
@@ -3955,6 +3978,7 @@ function captureCurrentGenerationJob(overrideText?: string): GenerationJob {
   if (!isGenerationMode(currentMode)) {
     throw new Error("This tab cannot generate audio");
   }
+  if (activeEngine === "drama") return captureDramaGenerationJob(overrideText);
   const options = gatherOptions();
   const deliveryPrefix = deliveryControlPrefix();
   let payload: GenerationJob["payload"];
@@ -4044,8 +4068,14 @@ function applyOptionsToUi(options: Record<string, number | string | boolean>): v
 }
 
 function loadQueuedJobForEdit(job: GenerationJob): void {
+  if ((job.engine || "higgs") !== activeEngine) applyEngineKind(job.engine || "higgs");
   switchMode(job.mode);
-  applyOptionsToUi(job.options);
+  if (job.engine === "drama") {
+    applyDramaOptionsToUi(dramaOptionsFromRequest(job.options));
+    if (job.dramaVoice) selectDramaVoice(job.dramaVoice);
+  } else {
+    applyOptionsToUi(job.options);
+  }
   const payload = job.payload;
   if (payload.kind === "tts") {
     el<HTMLTextAreaElement>("#tts-text").value = payload.text;
@@ -4263,6 +4293,7 @@ async function generateMultiSpeakerJob(job: GenerationJob & { payload: { kind: "
 }
 
 async function generateJobAudio(job: GenerationJob): Promise<GenerationResult> {
+  if (job.engine === "drama") return generateDramaJob(job);
   const payload = job.payload;
   if (payload.kind === "tts") {
     return invoke<GenerationResult>("generate_tts", {
@@ -4335,7 +4366,7 @@ async function runGenerationJob(job: GenerationJob): Promise<void> {
     setGenerationElapsedLabel();
     addHistory(job.mode, job.label || "Untitled", result);
     finishGeneration(true, "Generation complete");
-    advanceSeedAfterGeneration();
+    if (job.engine !== "drama") advanceSeedAfterGeneration();
   } catch (e) {
     const message = String(e);
     if (cancelRequested || message.toLowerCase().includes("cancel")) {
@@ -4361,6 +4392,7 @@ async function runGenerationJob(job: GenerationJob): Promise<void> {
 // Load Model by hand. Returns false only if something is genuinely missing
 // (no valid engine, or no model selected/downloaded).
 async function ensureLoadedForGeneration(): Promise<boolean> {
+  if (activeEngine === "drama") return ensureDramaLoaded();
   let status = await invoke<ModelStatusEvent>("engine_status").catch(() => null);
 
   // Engine — auto-load if present; if the DLL isn't downloaded at all, open the
@@ -4411,6 +4443,9 @@ async function ensureLoadedForGeneration(): Promise<boolean> {
 // On startup, silently load the engine + last-used model if everything needed
 // is already present, so the app is ready to generate right away.
 async function autoStartupLoad(): Promise<void> {
+  // Drama 3 takes ~21 GB of video memory: it loads on the first generation or by the
+  // Load button, not at startup.
+  if (activeEngine === "drama") return;
   try {
     const status = await invoke<ModelStatusEvent>("engine_status").catch(() => null);
     if (status?.engineLoaded && status?.modelLoaded) return;
@@ -4452,6 +4487,515 @@ async function doGenerate(): Promise<void> {
   } catch (e) {
     showToast(String(e), "warning");
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Drama 3 engine (speech.cpp): engine switch, model panel, voices, options and
+// remark buttons. The backend is src-tauri/src/speech_engine.rs (drama_* commands).
+// ═══════════════════════════════════════════════════════════════════════════
+
+type DramaVoiceInfo = { name: string; language: string; gender: string; description: string };
+type DramaModelInfo = {
+  name: string;
+  weightType: string;
+  sampleRate: number;
+  voices: DramaVoiceInfo[];
+  device?: string | null;
+  threads: number;
+  expertsOnCpu: boolean;
+  weightBytes: number;
+};
+type DramaDevice = { index: number; name: string; description: string; kind: string; totalBytes: number; freeBytes: number };
+type DramaStatus = {
+  phase?: string;
+  libraryLoaded: boolean;
+  libraryPath?: string;
+  version?: string;
+  modelLoaded: boolean;
+  modelPath?: string | null;
+  modelInfo?: DramaModelInfo | null;
+  generating: boolean;
+};
+type DramaGenerationResult = GenerationResult & { seed: number; stop: string; seconds: number };
+
+let activeEngine: EngineKind = getEngineKind();
+let dramaStatus: DramaStatus = { libraryLoaded: false, modelLoaded: false, generating: false };
+let dramaDevices: DramaDevice[] = [];
+let dramaLoading = false;
+let dramaVoiceFiles = loadDramaVoiceFiles();
+
+/** Tabs that only the Higgs engine can do so far. */
+const HIGGS_ONLY_MODES: Mode[] = ["clone", "finish", "multi", "batch"];
+
+function applyEngineKind(kind: EngineKind): void {
+  activeEngine = kind;
+  setEngineKind(kind);
+  const drama = kind === "drama";
+  el("#engine-pick-drama").classList.toggle("active", drama);
+  el("#engine-pick-higgs").classList.toggle("active", !drama);
+  el("#drama-panel").classList.toggle("hidden", !drama);
+  el("#model-panel").classList.toggle("hidden", drama);
+  for (const item of document.querySelectorAll<HTMLElement>(".drama-only")) {
+    item.classList.toggle("hidden", !drama);
+  }
+  for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
+    if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
+  }
+  switchMode(drama && HIGGS_ONLY_MODES.includes(currentMode) ? "tts" : currentMode);
+  if (drama) renderDramaChips();
+  else void refreshHiggsChips();
+}
+
+async function refreshHiggsChips(): Promise<void> {
+  const status = await invoke<ModelStatusEvent>("engine_status").catch(() => null);
+  const engineLoaded = Boolean(status?.engineLoaded);
+  const modelLoaded = Boolean(status?.modelLoaded);
+  setText("#engine-chip", engineLoaded ? t("Engine loaded") : t("Engine unloaded"));
+  el("#engine-chip").classList.toggle("active", engineLoaded);
+  setText("#model-chip", modelLoaded ? selectedModelUiName() : t("No model"));
+  el("#model-chip").classList.toggle("muted", !modelLoaded);
+  el("#model-chip").classList.toggle("active", modelLoaded);
+}
+
+function renderDramaChips(): void {
+  const s = dramaStatus;
+  setText("#engine-chip", s.libraryLoaded ? `speech.cpp ${s.version || ""}`.trim() : t("Engine unloaded"));
+  el("#engine-chip").classList.toggle("active", s.libraryLoaded);
+  const info = s.modelLoaded ? s.modelInfo : null;
+  setText("#model-chip", info ? `Drama 3 (${info.weightType})` : t("No model"));
+  el("#model-chip").classList.toggle("muted", !info);
+  el("#model-chip").classList.toggle("active", Boolean(info));
+}
+
+function gigabytes(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} ${t("GB")}`;
+}
+
+function renderDramaStatus(): void {
+  const s = dramaStatus;
+  const info = s.modelLoaded ? s.modelInfo : null;
+  const state = el<HTMLElement>("#drama-state");
+  setText("#drama-state", dramaLoading ? t("Loading…") : info ? t("Loaded") : t("Not loaded"));
+  state.classList.toggle("ok", Boolean(info) && !dramaLoading);
+  el<HTMLButtonElement>("#drama-load-btn").disabled = dramaLoading;
+  el<HTMLButtonElement>("#drama-unload-btn").disabled = dramaLoading || !info;
+
+  const detail = el<HTMLElement>("#drama-detail");
+  const lines: string[] = [];
+  let warn = false;
+  if (dramaLoading) {
+    lines.push(t("Loading the model into video memory, about half a minute…"));
+  } else if (info) {
+    const device = dramaDevices.find((d) => d.name === info.device);
+    lines.push(`${t("Device")}: ${device ? device.description : info.device || "—"}`);
+    if (device && device.kind !== "cpu") {
+      lines.push(`${t("Video memory free")}: ${gigabytes(device.freeBytes)} ${t("of")} ${gigabytes(device.totalBytes)}`);
+    }
+    if (info.expertsOnCpu) {
+      warn = true;
+      lines.push(`${t("Part of the model runs on the CPU")} (${info.threads} ${t("threads")}): ${t("generation is slower. Close programs that use the GPU and reload the model.")}`);
+    } else if (device && device.kind !== "cpu") {
+      lines.push(t("The whole model is in video memory."));
+    }
+  } else if (s.libraryLoaded) {
+    lines.push(`speech.cpp ${s.version || ""}: ${t("ready. The model loads on the first generation or with the Load button.")}`);
+  }
+  detail.textContent = lines.join("\n");
+  detail.classList.toggle("warn", warn);
+  renderDramaVoiceSelect();
+  if (activeEngine === "drama") renderDramaChips();
+}
+
+function renderDramaDeviceSelect(): void {
+  const select = el<HTMLSelectElement>("#drama-device");
+  const saved = localStorage.getItem(DRAMA_DEVICE_STORAGE_KEY) || "auto";
+  select.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "auto";
+  auto.textContent = t("Auto (first GPU)");
+  select.appendChild(auto);
+  for (const device of dramaDevices) {
+    const option = document.createElement("option");
+    option.value = device.name;
+    const memory = device.kind === "cpu" ? "" : ` · ${gigabytes(device.freeBytes)} ${t("free")}`;
+    option.textContent = `${device.name}: ${device.description}${memory}`;
+    select.appendChild(option);
+  }
+  select.value = Array.from(select.options).some((o) => o.value === saved) ? saved : "auto";
+}
+
+async function refreshDramaDevices(): Promise<void> {
+  if (!dramaStatus.libraryLoaded) return;
+  dramaDevices = await invoke<DramaDevice[]>("drama_devices").catch(() => dramaDevices);
+  renderDramaDeviceSelect();
+}
+
+async function refreshDramaStatus(): Promise<void> {
+  dramaStatus = await invoke<DramaStatus>("drama_status").catch(() => dramaStatus);
+  renderDramaStatus();
+}
+
+function dramaVoiceNames(): string[] {
+  const names = dramaStatus.modelLoaded && dramaStatus.modelInfo
+    ? dramaStatus.modelInfo.voices.map((v) => v.name)
+    : ["none", ...dramaVoiceFiles.map((v) => v.name)];
+  return Array.from(new Set(["none", ...names]));
+}
+
+function renderDramaVoiceSelect(): void {
+  const select = el<HTMLSelectElement>("#drama-voice");
+  // The saved choice wins: while the model loads, its voices are not added yet, and the
+  // select would otherwise fall back to "none" and forget the choice.
+  const current = localStorage.getItem(DRAMA_SELECTED_VOICE_STORAGE_KEY) || select.value || "none";
+  select.innerHTML = "";
+  for (const name of dramaVoiceNames()) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name === "none" ? t("none (the model chooses)") : name;
+    select.appendChild(option);
+  }
+  select.value = Array.from(select.options).some((o) => o.value === current) ? current : "none";
+  el<HTMLButtonElement>("#drama-voice-remove-btn").disabled = !dramaVoiceFiles.some((v) => v.name === select.value);
+}
+
+function selectDramaVoice(name: string): void {
+  localStorage.setItem(DRAMA_SELECTED_VOICE_STORAGE_KEY, name);
+  renderDramaVoiceSelect();
+  el<HTMLSelectElement>("#drama-voice").value = name;
+}
+
+async function unloadHiggsToFreeVram(): Promise<void> {
+  const status = await invoke<ModelStatusEvent>("engine_status").catch(() => null);
+  if (!status?.modelLoaded) return;
+  await invoke("unload_model");
+  showToast(t("Higgs model unloaded to free video memory"));
+}
+
+async function unloadDramaToFreeVram(): Promise<void> {
+  const status = await invoke<DramaStatus>("drama_status").catch(() => null);
+  if (!status?.modelLoaded) return;
+  await invoke("drama_unload_model");
+  showToast(t("Drama 3 model unloaded to free video memory"));
+}
+
+/** Adds the saved voice files that the loaded model does not have yet. */
+async function addSavedDramaVoices(): Promise<void> {
+  const have = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+  for (const voice of dramaVoiceFiles) {
+    if (have.has(voice.name)) continue;
+    try {
+      await invoke("drama_voice_add", { name: voice.name, path: voice.path });
+    } catch (e) {
+      showToast(`${t("Could not add voice")} ${voice.name}: ${e}`, "warning");
+    }
+  }
+  await refreshDramaStatus();
+}
+
+function dramaPathsFromInputs(): { libraryPath: string; modelPath: string; device: string } {
+  return {
+    libraryPath: el<HTMLInputElement>("#drama-library-path").value.trim(),
+    modelPath: el<HTMLInputElement>("#drama-model-path").value.trim(),
+    device: el<HTMLSelectElement>("#drama-device").value || "auto",
+  };
+}
+
+async function doLoadDrama(): Promise<boolean> {
+  if (dramaLoading) return false;
+  const { libraryPath, modelPath, device } = dramaPathsFromInputs();
+  dramaLoading = true;
+  renderDramaStatus();
+  try {
+    await unloadHiggsToFreeVram();
+    const result = await invoke<{ modelInfo: DramaModelInfo; devices: DramaDevice[] }>("drama_load_model", {
+      request: { libraryPath: libraryPath || null, modelPath: modelPath || null, device },
+    });
+    dramaDevices = result.devices;
+    renderDramaDeviceSelect();
+    dramaStatus = await invoke<DramaStatus>("drama_status");
+    if (dramaStatus.libraryPath) {
+      el<HTMLInputElement>("#drama-library-path").value = dramaStatus.libraryPath;
+      localStorage.setItem(DRAMA_LIBRARY_PATH_STORAGE_KEY, dramaStatus.libraryPath);
+    }
+    if (dramaStatus.modelPath) {
+      el<HTMLInputElement>("#drama-model-path").value = dramaStatus.modelPath;
+      localStorage.setItem(DRAMA_MODEL_PATH_STORAGE_KEY, dramaStatus.modelPath);
+    }
+    await addSavedDramaVoices();
+    if (result.modelInfo.expertsOnCpu) {
+      showToast(t("Drama 3 loaded, but part of the model runs on the CPU: generation will be slower."), "warning");
+    } else {
+      showToast(t("Drama 3 loaded"));
+    }
+    return true;
+  } catch (e) {
+    showToast(`${t("Failed to load Drama 3")}: ${e}`, "error");
+    return false;
+  } finally {
+    dramaLoading = false;
+    await refreshDramaStatus();
+  }
+}
+
+async function doUnloadDrama(): Promise<void> {
+  try {
+    await invoke("drama_unload_model");
+    await refreshDramaStatus();
+    await refreshDramaDevices();
+    renderDramaStatus();
+    showToast("Model unloaded");
+  } catch (e) {
+    showToast(`Failed to unload: ${e}`, "error");
+  }
+}
+
+async function ensureDramaLoaded(): Promise<boolean> {
+  await refreshDramaStatus();
+  if (dramaStatus.modelLoaded) return true;
+  showToast(t("Loading the Drama 3 model…"));
+  return doLoadDrama();
+}
+
+async function doAddDramaVoiceFile(): Promise<void> {
+  const selected = await open({ filters: [{ name: "Drama 3 voice", extensions: ["gguf"] }] });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) return;
+  const existing = dramaVoiceFiles.find((v) => v.path === path);
+  if (existing) {
+    selectDramaVoice(existing.name);
+    return;
+  }
+  const base = voiceNameFromPath(path);
+  const taken = new Set(["none", ...dramaVoiceNames(), ...dramaVoiceFiles.map((v) => v.name)]);
+  let name = base;
+  for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
+  if (dramaStatus.modelLoaded) {
+    try {
+      await invoke("drama_voice_add", { name, path });
+    } catch (e) {
+      showToast(`${t("Could not add voice")} ${name}: ${e}`, "error");
+      return;
+    }
+    await refreshDramaStatus();
+  }
+  dramaVoiceFiles.push({ name, path });
+  saveDramaVoiceFiles(dramaVoiceFiles);
+  selectDramaVoice(name);
+  showToast(dramaStatus.modelLoaded
+    ? `${t("Voice added")}: ${name}`
+    : `${t("Voice saved, it will be added when the model loads")}: ${name}`);
+}
+
+function removeSelectedDramaVoice(): void {
+  const name = el<HTMLSelectElement>("#drama-voice").value;
+  if (!dramaVoiceFiles.some((v) => v.name === name)) return;
+  dramaVoiceFiles = dramaVoiceFiles.filter((v) => v.name !== name);
+  saveDramaVoiceFiles(dramaVoiceFiles);
+  selectDramaVoice("none");
+  // speech.cpp cannot remove a voice from a loaded model: it goes on the next load.
+  showToast(dramaStatus.modelLoaded
+    ? `${t("Voice removed from the list; it leaves the model on the next load")}: ${name}`
+    : `${t("Voice removed")}: ${name}`);
+}
+
+// ─── Options ───
+
+const DRAMA_SLIDERS: Array<{ input: string; value: string; format: (v: number) => string }> = [
+  { input: "#drama-top-k", value: "#drama-val-top-k", format: (v) => String(Math.round(v)) },
+  { input: "#drama-top-p", value: "#drama-val-top-p", format: (v) => v.toFixed(2) },
+  { input: "#drama-temperature", value: "#drama-val-temperature", format: (v) => v.toFixed(2) },
+  { input: "#drama-max-seconds", value: "#drama-val-max-seconds", format: (v) => v.toFixed(1) },
+];
+
+function readDramaOptionsFromUi(): DramaOptions {
+  return {
+    seed: el<HTMLInputElement>("#drama-seed").value.trim(),
+    topK: parseInt(el<HTMLInputElement>("#drama-top-k").value, 10),
+    topP: parseFloat(el<HTMLInputElement>("#drama-top-p").value),
+    temperature: parseFloat(el<HTMLInputElement>("#drama-temperature").value),
+    maxSeconds: parseFloat(el<HTMLInputElement>("#drama-max-seconds").value),
+    expertsOnCpu: el<HTMLInputElement>("#drama-experts-on-cpu").checked,
+  };
+}
+
+function updateDramaSliderLabels(): void {
+  for (const slider of DRAMA_SLIDERS) {
+    el<HTMLElement>(slider.value).textContent = slider.format(parseFloat(el<HTMLInputElement>(slider.input).value));
+  }
+}
+
+function applyDramaOptionsToUi(options: DramaOptions): void {
+  el<HTMLInputElement>("#drama-seed").value = options.seed;
+  el<HTMLInputElement>("#drama-top-k").value = String(options.topK);
+  el<HTMLInputElement>("#drama-top-p").value = String(options.topP);
+  el<HTMLInputElement>("#drama-temperature").value = String(options.temperature);
+  el<HTMLInputElement>("#drama-max-seconds").value = String(options.maxSeconds);
+  el<HTMLInputElement>("#drama-experts-on-cpu").checked = options.expertsOnCpu;
+  updateDramaSliderLabels();
+  saveDramaOptions(options);
+}
+
+function setDramaLastSeed(seed: number): void {
+  el<HTMLElement>("#drama-last-seed").textContent = String(seed);
+  el<HTMLButtonElement>("#drama-seed-keep").disabled = false;
+}
+
+function renderDramaRemarks(): void {
+  const bar = el<HTMLElement>("#drama-remarks");
+  bar.innerHTML = "";
+  for (const remark of DRAMA_REMARKS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `compact-button remark-button ${remark.kind || "remark"}`;
+    button.textContent = t(remark.label);
+    button.title = remark.tip ? `${remark.tag}: ${t(remark.tip)}` : remark.tag;
+    // Keep the textarea's cursor: a mousedown on the button would take the focus away.
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => insertTagAtCursor(el<HTMLTextAreaElement>("#tts-text"), remark.tag));
+    bar.appendChild(button);
+  }
+}
+
+// ─── Generation ───
+
+function captureDramaGenerationJob(overrideText?: string): GenerationJob {
+  if (currentMode !== "tts") throw new Error(t("Drama 3 works in the TTS tab for now"));
+  const text = (overrideText ?? el<HTMLTextAreaElement>("#tts-text").value).trim();
+  if (!text) throw new Error(t("Please enter text to speak"));
+  const options = readDramaOptionsFromUi();
+  saveDramaOptions(options);
+  const job: GenerationJob = {
+    id: nextId("queue"),
+    mode: "tts",
+    label: "",
+    createdAt: Date.now(),
+    options: dramaRequestOptions(options),
+    deliveryPrefix: "",
+    payload: { kind: "tts", text },
+    engine: "drama",
+    dramaVoice: el<HTMLSelectElement>("#drama-voice").value || "none",
+  };
+  job.label = jobLabel(job);
+  return job;
+}
+
+async function generateDramaJob(job: GenerationJob): Promise<GenerationResult> {
+  if (job.payload.kind !== "tts") throw new Error(t("Drama 3 works in the TTS tab for now"));
+  if (!dramaStatus.modelLoaded && !(await ensureDramaLoaded())) {
+    throw new Error(t("The Drama 3 model is not loaded"));
+  }
+  const result = await invoke<DramaGenerationResult>("drama_generate", {
+    request: {
+      text: job.payload.text,
+      voice: job.dramaVoice || "none",
+      options: job.options,
+      streamPlayback,
+    },
+  });
+  setDramaLastSeed(result.seed);
+  if (result.stop === "max_seconds") {
+    // After the "Generation complete" toast.
+    window.setTimeout(() => showToast(t("Stopped at the Max seconds limit: the end of the text may be missing."), "warning"), 2500);
+  }
+  return result;
+}
+
+function initDramaEngine(): void {
+  el("#engine-pick-drama").addEventListener("click", () => applyEngineKind("drama"));
+  el("#engine-pick-higgs").addEventListener("click", () => applyEngineKind("higgs"));
+
+  const libraryInput = el<HTMLInputElement>("#drama-library-path");
+  const modelInput = el<HTMLInputElement>("#drama-model-path");
+  libraryInput.value = localStorage.getItem(DRAMA_LIBRARY_PATH_STORAGE_KEY) || "";
+  modelInput.value = localStorage.getItem(DRAMA_MODEL_PATH_STORAGE_KEY) || "";
+  libraryInput.addEventListener("change", () => localStorage.setItem(DRAMA_LIBRARY_PATH_STORAGE_KEY, libraryInput.value.trim()));
+  modelInput.addEventListener("change", () => localStorage.setItem(DRAMA_MODEL_PATH_STORAGE_KEY, modelInput.value.trim()));
+  el("#drama-library-browse").addEventListener("click", async () => {
+    const selected = await open({ filters: [{ name: "speech.dll", extensions: ["dll"] }] });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    libraryInput.value = path;
+    localStorage.setItem(DRAMA_LIBRARY_PATH_STORAGE_KEY, path);
+  });
+  el("#drama-model-browse").addEventListener("click", async () => {
+    const selected = await open({ filters: [{ name: "Drama 3 GGUF", extensions: ["gguf"] }] });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    modelInput.value = path;
+    localStorage.setItem(DRAMA_MODEL_PATH_STORAGE_KEY, path);
+  });
+  el<HTMLSelectElement>("#drama-device").addEventListener("change", (event) => {
+    localStorage.setItem(DRAMA_DEVICE_STORAGE_KEY, (event.target as HTMLSelectElement).value);
+  });
+  el("#drama-load-btn").addEventListener("click", () => void doLoadDrama());
+  el("#drama-unload-btn").addEventListener("click", () => void doUnloadDrama());
+
+  el("#drama-voice-add-btn").addEventListener("click", () => void doAddDramaVoiceFile());
+  el("#drama-voice-remove-btn").addEventListener("click", removeSelectedDramaVoice);
+  el<HTMLSelectElement>("#drama-voice").addEventListener("change", (event) => {
+    selectDramaVoice((event.target as HTMLSelectElement).value);
+  });
+
+  renderDramaRemarks();
+
+  applyDramaOptionsToUi(loadDramaOptions());
+  const persist = () => {
+    updateDramaSliderLabels();
+    saveDramaOptions(readDramaOptionsFromUi());
+  };
+  for (const slider of DRAMA_SLIDERS) el(slider.input).addEventListener("input", persist);
+  el("#drama-experts-on-cpu").addEventListener("change", persist);
+  const seedInput = el<HTMLInputElement>("#drama-seed");
+  seedInput.addEventListener("input", () => {
+    const digits = seedInput.value.replace(/\D/g, "");
+    if (digits !== seedInput.value) seedInput.value = digits;
+    persist();
+  });
+  el("#drama-seed-clear").addEventListener("click", () => {
+    seedInput.value = "";
+    persist();
+  });
+  el("#drama-seed-keep").addEventListener("click", () => {
+    const last = el<HTMLElement>("#drama-last-seed").textContent || "";
+    if (!/^\d+$/.test(last)) return;
+    seedInput.value = last;
+    persist();
+    showToast(t("Seed kept: generation will repeat this take"));
+  });
+  el("#drama-options-reset").addEventListener("click", () => {
+    applyDramaOptionsToUi({ ...DRAMA_DEFAULT_OPTIONS });
+    showToast(t("Drama 3 options reset"));
+  });
+
+  applyEngineKind(activeEngine);
+  renderDramaStatus();
+  void initDramaPaths();
+}
+
+/** Fills empty paths with the defaults found on disk and loads speech.dll (not the model). */
+async function initDramaPaths(): Promise<void> {
+  const defaults = await invoke<{ libraryPath: string | null; modelPath: string | null }>("drama_default_paths").catch(() => null);
+  const libraryInput = el<HTMLInputElement>("#drama-library-path");
+  const modelInput = el<HTMLInputElement>("#drama-model-path");
+  if (!libraryInput.value && defaults?.libraryPath) libraryInput.value = defaults.libraryPath;
+  if (!modelInput.value && defaults?.modelPath) modelInput.value = defaults.modelPath;
+  if (activeEngine !== "drama" || !libraryInput.value) {
+    renderDramaStatus();
+    return;
+  }
+  try {
+    const status = await invoke<DramaStatus & { devices: DramaDevice[] }>("drama_load_library", {
+      libraryPath: libraryInput.value,
+    });
+    dramaDevices = status.devices || [];
+    dramaStatus = status;
+    renderDramaDeviceSelect();
+  } catch (e) {
+    el<HTMLElement>("#drama-detail").textContent = `${t("speech.dll did not load")}: ${e}`;
+    el<HTMLElement>("#drama-detail").classList.add("warn");
+    return;
+  }
+  renderDramaStatus();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6349,10 +6893,7 @@ async function initEventListeners(): Promise<void> {
       el("#model-chip").classList.add("muted");
       el("#model-chip").classList.remove("active");
       el<HTMLButtonElement>("#unload-model-btn").disabled = true;
-      return;
-    }
-
-    if (status.displayName) {
+    } else if (status.displayName) {
       const uiName = selectedModelUiName();
       setText("#model-state", t("Loaded"));
       el("#model-state").classList.add("ok");
@@ -6361,6 +6902,19 @@ async function initEventListeners(): Promise<void> {
       el("#model-chip").classList.add("active");
       el<HTMLButtonElement>("#unload-model-btn").disabled = false;
     }
+    // The topbar chips show the engine in use.
+    if (activeEngine === "drama") renderDramaChips();
+  });
+
+  await listen<DramaStatus>("drama-status", (event) => {
+    if (event.payload.phase === "loading") return;
+    dramaStatus = event.payload;
+    renderDramaStatus();
+  });
+
+  await listen<{ seconds: number }>("drama-progress", (event) => {
+    if (!isGenerating || activeGenerationJob?.engine !== "drama") return;
+    setGenerationElapsedLabel(`${t("Audio ready")}: ${event.payload.seconds.toFixed(1)} ${t("s")} · ${t("elapsed")}`);
   });
 
   await listen<ProgressEvent>("generation-progress", (event) => {
@@ -6465,6 +7019,7 @@ async function main(): Promise<void> {
   initMultiSpeakerWorkflow();
   initTauriDropzones();
   initAdvancedOptions();
+  initDramaEngine();
   initGenerate();
   initAudioPlayer();
   initBatchTab();

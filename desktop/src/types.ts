@@ -236,6 +236,10 @@ export type GenerationJob = {
   createdAt: number;
   options: Record<string, number | string | boolean>;
   deliveryPrefix: string;
+  /** Speech engine; absent = Higgs (jobs made before the switch existed). */
+  engine?: "drama" | "higgs";
+  /** Drama 3 voice: "none" or a voice added to the model. */
+  dramaVoice?: string;
   payload:
     | { kind: "tts"; text: string }
     | { kind: "clone"; text: string; refPath: string; refName: string; refText?: string; normalize: boolean; personaId?: string }
