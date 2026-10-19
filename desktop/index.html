@@ -318,6 +318,7 @@
                       </div>
                       <canvas class="ref-waveform" id="gallery-ref-waveform"></canvas>
                     </div>
+                    <button id="speaker-gallery-trim" class="compact-button hidden" type="button">✂ Trim the recording</button>
                     <label class="inline-toggle reference-normalize-toggle">
                       <span>Normalize reference</span>
                       <span class="toggle-switch"><input type="checkbox" id="speaker-gallery-normalize" /><span class="toggle-slider"></span></span>
@@ -658,6 +659,18 @@
                 <span class="tip" tabindex="0" data-tip="On: if the model does not fit in video memory, part of it runs on the CPU (slower). Off: refuse instead of running slowly.">?</span>
                 <label class="toggle-switch"><input type="checkbox" id="drama-experts-on-cpu" checked /><span class="toggle-slider"></span></label>
               </label>
+              <label class="slider-label">
+                <span class="slider-name">Shorten pauses</span>
+                <span class="tip" tabindex="0" data-tip="After each generation, long silences are shortened automatically. Drama 3 often leaves pauses of several seconds; this keeps takes usable. The editor (✂ Edit) does the same by hand.">?</span>
+                <label class="toggle-switch"><input type="checkbox" id="drama-auto-pauses" checked /><span class="toggle-slider"></span></label>
+              </label>
+              <label class="slider-label drama-pause-row">
+                <span class="slider-name">Pause longer than</span>
+                <input type="number" id="drama-pause-longer" min="0.3" max="10" step="0.1" value="1" class="number-input" />
+                <span>s → keep</span>
+                <input type="number" id="drama-pause-keep" min="0" max="5" step="0.05" value="0.5" class="number-input" />
+                <span>s</span>
+              </label>
               <div class="slider-label">
                 <button id="drama-options-reset" class="compact-button" type="button">Reset to defaults</button>
               </div>
@@ -900,6 +913,7 @@ Third phrase."></textarea>
           <div class="output-section hidden" id="output-section">
             <div class="output-head">
               <h3>Output</h3>
+              <button id="output-edit-btn" class="compact-button output-edit-button" type="button" title="Cut pauses and pieces out of the result">✂ Edit</button>
               <div class="save-menu">
                 <button id="download-output-btn" class="compact-button icon-save-button" type="button" aria-label="Save audio" title="Save audio">
                   <svg class="download-save-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" aria-hidden="true">
@@ -1150,6 +1164,41 @@ Third phrase."></textarea>
             <button id="engine-diagnostic-driver" class="compact-button" type="button">Open nvidia.com/drivers</button>
             <button id="engine-diagnostic-cuda" class="compact-button" type="button">Download CUDA runtime</button>
             <button id="engine-diagnostic-vc" class="compact-button primary" type="button">Download VC++ runtime</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ═══════════ Audio editor (cut, crop, shorten pauses) ═══════════ -->
+      <div id="audio-editor-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="audio-editor-title">
+        <section class="modal-panel audio-editor-panel">
+          <div class="modal-head">
+            <div>
+              <h3 id="audio-editor-title">Audio editor</h3>
+              <span id="audio-editor-info" class="api-status-text"></span>
+            </div>
+            <button id="audio-editor-close" class="popover-close" type="button" aria-label="Close">✕</button>
+          </div>
+          <div class="audio-editor-body">
+            <canvas id="audio-editor-canvas" class="audio-editor-canvas"></canvas>
+            <p class="input-hint">Drag on the wave to select. Red: long pauses, click one to select it. Mouse wheel: zoom, Shift + wheel: scroll. Space: play, Delete: remove the selection, Ctrl+Z: undo.</p>
+            <div class="audio-editor-controls">
+              <button id="audio-editor-play" class="compact-button primary" type="button">▶ Play</button>
+              <button id="audio-editor-delete" class="compact-button" type="button">✂ Delete selection</button>
+              <button id="audio-editor-crop" class="compact-button" type="button">Keep only selection</button>
+              <button id="audio-editor-undo" class="compact-button" type="button">↶ Undo</button>
+            </div>
+            <div class="audio-editor-pauses">
+              <span>Pauses longer than</span>
+              <input id="audio-editor-longer" type="number" min="0.3" max="10" step="0.1" class="number-input" />
+              <span>s → keep</span>
+              <input id="audio-editor-keep" type="number" min="0" max="5" step="0.05" class="number-input" />
+              <span>s</span>
+              <button id="audio-editor-shorten" class="compact-button" type="button">Shorten all long pauses</button>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button id="audio-editor-cancel" class="compact-button" type="button">Cancel</button>
+            <button id="audio-editor-save" class="compact-button primary" type="button">Save</button>
           </div>
         </section>
       </div>

@@ -42,6 +42,9 @@ import {
   parseWavPcm,
 } from "./audio";
 import { buildApiExample as buildApiExampleSnippet } from "./apiExamples";
+import { loadPauseTrimSettings, savePauseTrimSettings, shortenResultPauses } from "./audioEdit";
+import type { PauseTrimSettings } from "./audioEdit";
+import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import {
   DRAMA_DEFAULT_OPTIONS,
   DRAMA_DEVICE_STORAGE_KEY,
@@ -2718,6 +2721,7 @@ function renderSpeakerGalleryEditor(): void {
     clearDropzone("#speaker-gallery-dropzone");
     hideRefPreview("gallery");
   }
+  el("#speaker-gallery-trim").classList.toggle("hidden", !persona.refPath);
   renderSpeakerDramaState(persona);
 }
 
@@ -5213,7 +5217,113 @@ async function generateDramaJob(job: GenerationJob): Promise<GenerationResult> {
     // After the "Generation complete" toast.
     window.setTimeout(() => showToast(t("Stopped at the Max seconds limit: the end of the text may be missing."), "warning"), 2500);
   }
-  return result;
+  const shortened = autoShortenPauses(result);
+  reportAutoShortened();
+  return shortened;
+}
+
+// ─── Pauses and the audio editor ───
+
+let pauseTrim: PauseTrimSettings = loadPauseTrimSettings();
+let autoShortenedCount = 0;
+let autoShortenedSeconds = 0;
+
+/** Shortens the long pauses of a Drama 3 result when the automatic option is on. */
+function autoShortenPauses<T extends GenerationResult>(result: T): T {
+  if (!pauseTrim.auto) return result;
+  try {
+    const shortened = shortenResultPauses(result, pauseTrim);
+    autoShortenedCount += shortened.count;
+    autoShortenedSeconds += shortened.seconds;
+    return shortened.result;
+  } catch {
+    return result;
+  }
+}
+
+/** Tells how many pauses were shortened since the last report, after the completion toast. */
+function reportAutoShortened(): void {
+  const count = autoShortenedCount;
+  const removed = autoShortenedSeconds;
+  autoShortenedCount = 0;
+  autoShortenedSeconds = 0;
+  if (count === 0) return;
+  window.setTimeout(
+    () => showToast(`${t("Long pauses shortened")}: ${count} (−${removed.toFixed(1)} ${t("s")})`),
+    1400,
+  );
+}
+
+function setPauseTrim(next: PauseTrimSettings): void {
+  pauseTrim = next;
+  savePauseTrimSettings(pauseTrim);
+  el<HTMLInputElement>("#drama-auto-pauses").checked = pauseTrim.auto;
+  el<HTMLInputElement>("#drama-pause-longer").value = String(pauseTrim.longerThan);
+  el<HTMLInputElement>("#drama-pause-keep").value = String(pauseTrim.keep);
+}
+
+function editAudio(title: string, wavBase64: string, onSave: (result: GenerationResult) => Promise<void> | void): void {
+  openAudioEditor({ title, wavBase64, settings: { ...pauseTrim }, onSettings: (s) => setPauseTrim({ ...pauseTrim, longerThan: s.longerThan, keep: s.keep }), onSave });
+}
+
+async function trimGalleryReference(): Promise<void> {
+  const persona = selectedGalleryPersona();
+  if (!persona?.refPath) return;
+  let source: GenerationResult;
+  try {
+    source = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: persona.refPath });
+  } catch (e) {
+    showToast(`${t("Could not read the recording")}: ${e}`, "error");
+    return;
+  }
+  editAudio(`${t("Trim the recording")}: ${persona.name}`, source.wavBase64, async (edited) => {
+    // Written into the speaker's own folder, then stored as its reference.wav.
+    const voiceFile = await invoke<{ path: string }>("speaker_drama_voice_path", {
+      speakerId: persona.id,
+      speakerName: persona.name,
+    });
+    const editPath = voiceFile.path.replace(/[^\\/]+$/, "reference_edit.wav");
+    await invoke("save_binary_file", { path: editPath, base64Data: edited.wavBase64 });
+    const stored = await storeSpeakerAsset(persona, editPath, "audio");
+    persona.refPath = stored.path;
+    persona.refName = stored.fileName;
+    persona.cachePath = "";
+    await ensureSpeakerCachePath(persona);
+    // The Drama 3 voice was made from the old recording.
+    if (persona.dramaVoicePath) persona.dramaVoiceText = "";
+    persona.updatedAt = Date.now();
+    saveSpeakerPersonas();
+    showRefPreview("gallery", persona.refPath);
+    showToast(persona.dramaVoicePath
+      ? t("Recording trimmed. Recreate the Drama 3 voice so it uses the new recording.")
+      : t("Recording trimmed"));
+  });
+}
+
+function initAudioEditing(): void {
+  initAudioEditor(showToast);
+  setPauseTrim(pauseTrim);
+  el("#drama-auto-pauses").addEventListener("change", (event) => {
+    setPauseTrim({ ...pauseTrim, auto: (event.target as HTMLInputElement).checked });
+  });
+  for (const id of ["#drama-pause-longer", "#drama-pause-keep"]) {
+    el(id).addEventListener("change", () => {
+      const longerThan = Math.min(10, Math.max(0.3, parseFloat(el<HTMLInputElement>("#drama-pause-longer").value) || 1));
+      const keep = Math.min(longerThan, Math.max(0, parseFloat(el<HTMLInputElement>("#drama-pause-keep").value) || 0));
+      setPauseTrim({ ...pauseTrim, longerThan, keep });
+    });
+  }
+  el("#output-edit-btn").addEventListener("click", () => {
+    const result = lastResult;
+    if (!result) return;
+    const mode = currentMode;
+    editAudio(t("Edit the result"), result.wavBase64, (edited) => {
+      lastResult = edited;
+      showOutput(edited, mode);
+      showToast(t("Result updated"));
+    });
+  });
+  el("#speaker-gallery-trim").addEventListener("click", () => void trimGalleryReference());
 }
 
 function initDramaEngine(): void {
@@ -5418,7 +5528,10 @@ function renderSceneLineResults(): void {
         <span>${escapeHtml(line.reply.text.length > 140 ? `${line.reply.text.slice(0, 140)}…` : line.reply.text)}</span>
       </span>
       <span class="scene-result-meta">${line.result.seconds.toFixed(1)} ${escapeHtml(t("s"))} · seed ${line.result.seed}</span>
-      <button class="compact-button" data-action="redo" type="button" ${sceneLineBusy >= 0 || isGenerating ? "disabled" : ""}>${escapeHtml(busy ? t("Generating…") : t("↻ Redo"))}</button>
+      <span class="scene-result-actions">
+        <button class="compact-button" data-action="edit" type="button" title="${escapeHtml(t("Cut pauses and pieces out of this line"))}" ${sceneLineBusy >= 0 ? "disabled" : ""}>✂</button>
+        <button class="compact-button" data-action="redo" type="button" ${sceneLineBusy >= 0 || isGenerating ? "disabled" : ""}>${escapeHtml(busy ? t("Generating…") : t("↻ Redo"))}</button>
+      </span>
     `;
     list.appendChild(row);
   });
@@ -5465,6 +5578,18 @@ function sceneLineRequest(reply: SceneReply, characters: DramaCharacter[]): { te
   return { text: `${characterVoiceHint(character)}${reply.text}`, voice };
 }
 
+function editSceneLine(index: number): void {
+  const line = sceneLines[index];
+  if (!line) return;
+  const name = sceneLinesCharacters[line.reply.character]?.name || "";
+  editAudio(`${t("Line")} ${index + 1}${name ? `: ${name}` : ""}`, line.result.wavBase64, (edited) => {
+    const seconds = edited.sampleCount / edited.channels / edited.sampleRate;
+    sceneLines[index] = { reply: line.reply, result: { ...line.result, ...edited, seconds } };
+    renderSceneLineResults();
+    showOutput(showJoinedSceneLines(), "multi");
+  });
+}
+
 async function redoSceneLine(index: number): Promise<void> {
   const line = sceneLines[index];
   if (!line || sceneLineBusy >= 0) return;
@@ -5482,7 +5607,8 @@ async function redoSceneLine(index: number): Promise<void> {
     const result = await invoke<DramaGenerationResult>("drama_generate", {
       request: { text, voice, options, streamPlayback: false },
     });
-    sceneLines[index] = { reply: line.reply, result };
+    sceneLines[index] = { reply: line.reply, result: autoShortenPauses(result) };
+    reportAutoShortened();
     setDramaLastSeed(result.seed);
     const joined = showJoinedSceneLines();
     showOutput(joined, "multi");
@@ -5547,10 +5673,11 @@ async function generateDramaScene(
         request: { text, voice, options: job.options, streamPlayback: false },
       });
       setDramaLastSeed(result.seed);
-      sceneLines.push({ reply: replies[i], result });
+      sceneLines.push({ reply: replies[i], result: autoShortenPauses(result) });
       renderSceneLineResults();
     }
     setProgress("#gen-progress-bar", 1, 1);
+    reportAutoShortened();
     return showJoinedSceneLines();
   }
 
@@ -5578,9 +5705,10 @@ async function generateDramaScene(
     if (result.stop === "max_seconds") {
       window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
     }
-    results.push(result);
+    results.push(autoShortenPauses(result));
   }
   setProgress("#gen-progress-bar", 1, 1);
+  reportAutoShortened();
   return results.length === 1 ? results[0] : concatenateWavResults(results, 0.3);
 }
 
@@ -5654,6 +5782,7 @@ function initDramaScene(): void {
     if (!button) return;
     const index = Number(button.closest<HTMLElement>(".scene-result-row")?.dataset.index);
     if (button.dataset.action === "play") void playSceneLine(index);
+    else if (button.dataset.action === "edit") editSceneLine(index);
     else void redoSceneLine(index);
   });
   renderDramaScene();
@@ -7707,6 +7836,7 @@ async function main(): Promise<void> {
   initTauriDropzones();
   initAdvancedOptions();
   initDramaEngine();
+  initAudioEditing();
   initGenerate();
   initAudioPlayer();
   initBatchTab();

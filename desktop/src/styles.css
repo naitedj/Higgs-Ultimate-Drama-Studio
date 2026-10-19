@@ -2315,3 +2315,21 @@ input[type="range"]::-moz-range-thumb {
 .scene-result-main { display: flex; flex-direction: column; font-size: 13px; min-width: 0; }
 .scene-result-main span { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-result-meta { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.output-head { gap: 8px; }
+.output-edit-button { margin-left: auto; }
+#speaker-gallery-trim { margin-top: 8px; }
+.scene-result-actions { display: flex; gap: 6px; }
+.drama-pause-row .number-input { width: 64px; }
+.drama-pause-row span:not(.slider-name) { color: var(--text-secondary); font-size: 12px; }
+.audio-editor-panel { max-width: 1100px; width: min(1100px, 94vw); }
+.audio-editor-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; }
+.audio-editor-canvas {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: crosshair;
+  height: 200px;
+  width: 100%;
+}
+.audio-editor-controls, .audio-editor-pauses { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.audio-editor-pauses span { color: var(--text-secondary); font-size: 12px; }
+.audio-editor-pauses .number-input { width: 70px; }
