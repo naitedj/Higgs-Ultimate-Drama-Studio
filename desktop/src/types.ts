@@ -247,7 +247,7 @@ export type GenerationJob = {
     | { kind: "multi"; speakers: MultiSpeaker[]; lines: MultiLine[] }
     | {
         kind: "scene";
-        characters: Array<{ id: string; name: string; voice: string; description: string }>;
+        characters: Array<{ id: string; name: string; voice: string; description: string; style?: string }>;
         script: string;
         sceneMode: "scene" | "lines";
         pause: number;

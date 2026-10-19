@@ -847,6 +847,23 @@ export const RU: Record<string, string> = {
   "Put the cursor in a line (or select several) and press a character, or Alt+its number: the line gets that speaker. A line can also start with “Name:”.":
     "Поставьте курсор в строку (или выделите несколько) и нажмите персонажа или Alt+его номер — строка достанется ему. Строку можно начать и с «Имя:».",
   "Narrator (chapter voice)": "Рассказчик (голос главы)",
+  // Manner of a character
+  "How this character speaks in every reply: pick or type a direction in English": "Как этот персонаж говорит во всех репликах: выберите вариант или впишите указание по-английски",
+  "Manner, e.g. calm narrator": "Манера, например спокойный рассказчик",
+  "Narrator manner": "Манера рассказчика",
+  "How the narrator speaks in every piece it reads: pick or type a direction in English": "Как рассказчик читает каждый свой кусок: выберите вариант или впишите указание по-английски",
+  "Calm narrator": "Спокойный рассказчик",
+  "Warm, gentle": "Тёплый, мягкий",
+  "Lively, energetic": "Бодрый, живой",
+  "Serious, measured": "Серьёзный, размеренный",
+  "Stern, cold": "Строгий, холодный",
+  "Cheerful": "Весёлый",
+  "Sad, quiet": "Грустный, тихий",
+  "Tired, slow": "Усталый, медленный",
+  "Nervous, hurried": "Нервный, торопливый",
+  "Playful, childlike": "Игривый, детский",
+  "Soft, intimate": "Мягкий, доверительный",
+  "Old, raspy": "Старческий, хрипловатый",
   // Remark buttons (the tags themselves stay English: Drama 3 reads English directions).
   "Sigh": "Вздох",
   "Laugh": "Смех",

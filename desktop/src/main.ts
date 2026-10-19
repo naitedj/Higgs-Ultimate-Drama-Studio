@@ -65,7 +65,9 @@ import {
   DRAMA_MAX_SPEAKERS,
   DRAMA_STEADY_TEMPERATURE,
   DRAMA_STEADY_TOP_P,
-  characterVoiceHint,
+  characterLineHint,
+  characterStyleHint,
+  DRAMA_STYLE_PRESETS,
   loadDramaScene,
   newDramaCharacter,
   parseScene,
@@ -6109,12 +6111,16 @@ function renderSceneCharacters(): void {
       <select class="select-input" data-field="voice">${sceneVoiceOptionsHtml(character.voice)}</select>
       <input class="text-input" data-field="description" type="text" spellcheck="false"
         placeholder="${escapeHtml(t("Voice description in English, e.g. calm elderly man, low voice"))}" />
+      <input class="text-input" data-field="style" type="text" list="drama-style-presets" spellcheck="false"
+        title="${escapeHtml(t("How this character speaks in every reply: pick or type a direction in English"))}"
+        placeholder="${escapeHtml(t("Manner, e.g. calm narrator"))}" />
       <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
     `;
     row.querySelector<HTMLInputElement>('[data-field="name"]')!.value = character.name;
     row.querySelector<HTMLSelectElement>('[data-field="voice"]')!.value = character.voice;
     const description = row.querySelector<HTMLInputElement>('[data-field="description"]')!;
     description.value = character.description;
+    row.querySelector<HTMLInputElement>('[data-field="style"]')!.value = character.style || "";
     description.classList.toggle("hidden", character.voice !== "none");
     list.appendChild(row);
   });
@@ -6231,7 +6237,7 @@ function sceneLineRequest(reply: SceneReply, characters: DramaCharacter[]): { te
   if (character && character.voice !== "none" && voice === "none") {
     throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
   }
-  return { text: `${characterVoiceHint(character)}${reply.text}`, voice };
+  return { text: `${characterLineHint(character)}${reply.text}`, voice };
 }
 
 function editSceneLine(index: number): void {
@@ -6388,6 +6394,7 @@ function initDramaScene(): void {
       renderSceneSpeakerBar();
     }
     if (input.dataset.field === "description") character.description = input.value;
+    if (input.dataset.field === "style") character.style = input.value;
     if (input.dataset.field === "voice") {
       character.voice = input.value;
       renderSceneCharacters();
@@ -8106,6 +8113,8 @@ type ChapterSettings = {
   pauseSentence: number;
   pauseDialogue: number;
   level: boolean;
+  /** The narrator's manner in every piece it reads. */
+  narratorStyle: string;
 };
 
 const CHAPTER_STORAGE_KEY = "dramaStudio.chapter";
@@ -8153,6 +8162,7 @@ function readChapterSettings(): ChapterSettings {
     pauseSentence: num("#chapter-pause-sentence", 0, 3, 0.3),
     pauseDialogue: num("#chapter-pause-dialogue", 0, 3, 0.45),
     level: el<HTMLInputElement>("#chapter-level").checked,
+    narratorStyle: el<HTMLInputElement>("#chapter-narrator-style").value,
   };
 }
 
@@ -8184,6 +8194,7 @@ function loadChapterSettings(): void {
   setNum("#chapter-pause-sentence", saved.pauseSentence);
   setNum("#chapter-pause-dialogue", saved.pauseDialogue);
   if (typeof saved.voice === "string") el<HTMLSelectElement>("#chapter-voice").dataset.saved = saved.voice;
+  if (typeof saved.narratorStyle === "string") el<HTMLInputElement>("#chapter-narrator-style").value = saved.narratorStyle;
 }
 
 function refreshChapterVoiceOptions(): void {
@@ -8223,11 +8234,15 @@ function chapterPieceRequest(piece: ChapterPieceState): { text: string; voice: s
     if (character && character.voice !== "none" && voice === "none") {
       throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
     }
-    return { text: `${characterVoiceHint(character)}${piece.text}`, voice };
+    return { text: `${characterLineHint(character)}${piece.text}`, voice };
   }
-  const voice = readChapterSettings().voice;
+  const settings = readChapterSettings();
+  const voice = settings.voice;
   if (voice !== "none" && !loaded.has(voice)) throw new Error(`${t("Voice not found")}: ${voice}`);
-  return { text: piece.text, voice };
+  // The narrator's manner: the chapter's own, else the scene narrator's.
+  const sceneNarrator = dramaScene.characters[findNarrator(dramaScene.characters)];
+  const style = settings.narratorStyle.trim() ? { style: settings.narratorStyle } : sceneNarrator;
+  return { text: `${characterStyleHint(style)}${piece.text}`, voice };
 }
 
 const CHAPTER_STATUS_LABEL: Record<ChapterPieceStatus, string> = {
@@ -8526,10 +8541,24 @@ async function joinChapter(): Promise<void> {
   }
 }
 
+/** The list of ready-made manners shown under a "Manner" field (labels translated). */
+function renderStylePresets(): void {
+  let list = document.querySelector<HTMLDataListElement>("#drama-style-presets");
+  if (!list) {
+    list = document.createElement("datalist");
+    list.id = "drama-style-presets";
+    document.body.appendChild(list);
+  }
+  list.innerHTML = DRAMA_STYLE_PRESETS
+    .map((preset) => `<option value="${escapeHtml(preset.tag)}" label="${escapeHtml(t(preset.label))}"></option>`)
+    .join("");
+}
+
 function initChapter(): void {
+  renderStylePresets();
   loadChapterSettings();
   refreshChapterVoiceOptions();
-  for (const id of ["#chapter-text", "#chapter-voice", "#chapter-use-characters", "#chapter-max-chars", "#chapter-check", "#chapter-retries", "#chapter-pause-paragraph", "#chapter-pause-sentence", "#chapter-pause-dialogue", "#chapter-level"]) {
+  for (const id of ["#chapter-text", "#chapter-voice", "#chapter-use-characters", "#chapter-max-chars", "#chapter-check", "#chapter-retries", "#chapter-pause-paragraph", "#chapter-pause-sentence", "#chapter-pause-dialogue", "#chapter-level", "#chapter-narrator-style"]) {
     el(id).addEventListener("change", saveChapterSettings);
   }
   renderChapterCharacterTools();

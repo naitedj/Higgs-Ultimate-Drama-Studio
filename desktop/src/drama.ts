@@ -253,7 +253,31 @@ export type DramaCharacter = {
   voice: string;
   /** For "none": how the voice sounds, in English. */
   description: string;
+  /** How this character speaks throughout (an English direction put before each of its replies). */
+  style?: string;
 };
+
+/** Ready-made manners: English direction for Drama 3, label translated through i18n. */
+export const DRAMA_STYLE_PRESETS: Array<{ tag: string; label: string }> = [
+  { tag: "calm, steady audiobook narration", label: "Calm narrator" },
+  { tag: "warm, gentle", label: "Warm, gentle" },
+  { tag: "lively, energetic", label: "Lively, energetic" },
+  { tag: "serious, low, measured", label: "Serious, measured" },
+  { tag: "stern, cold", label: "Stern, cold" },
+  { tag: "cheerful, smiling", label: "Cheerful" },
+  { tag: "sad, quiet", label: "Sad, quiet" },
+  { tag: "tired, slow", label: "Tired, slow" },
+  { tag: "nervous, hurried", label: "Nervous, hurried" },
+  { tag: "playful, childlike", label: "Playful, childlike" },
+  { tag: "soft, intimate, close to the microphone", label: "Soft, intimate" },
+  { tag: "old, raspy", label: "Old, raspy" },
+];
+
+/** "[manner] " for a character with a manner, else "". */
+export function characterStyleHint(character: { style?: string } | undefined): string {
+  const tag = toDramaTag(character?.style || "");
+  return tag ? `${tag} ` : "";
+}
 
 export type DramaSceneMode = "scene" | "lines";
 
@@ -279,7 +303,7 @@ let characterCounter = 0;
 
 export function newDramaCharacter(name = ""): DramaCharacter {
   characterCounter += 1;
-  return { id: `char_${Date.now().toString(36)}_${characterCounter}`, name, voice: "none", description: "" };
+  return { id: `char_${Date.now().toString(36)}_${characterCounter}`, name, voice: "none", description: "", style: "" };
 }
 
 export function loadDramaScene(): DramaScene {
@@ -294,6 +318,7 @@ export function loadDramaScene(): DramaScene {
             name: c.name,
             voice: typeof c.voice === "string" && c.voice ? c.voice : "none",
             description: typeof c.description === "string" ? c.description : "",
+            style: typeof c.style === "string" ? c.style : "",
           })),
         script: typeof raw.script === "string" ? raw.script : "",
         mode: raw.mode === "lines" ? "lines" : "scene",
@@ -408,14 +433,21 @@ export function characterVoiceHint(character: DramaCharacter | undefined): strin
   return tag ? `${tag} ` : "";
 }
 
+/** Everything put before a reply read on its own: the voice description ("none") and the manner. */
+export function characterLineHint(character: DramaCharacter | undefined): string {
+  return `${characterVoiceHint(character)}${characterStyleHint(character)}`;
+}
+
 /** Drama 3 text of replies with speaker tags; a "none" character's description at its first reply. */
 export function sceneText(replies: SceneReply[], characters: DramaCharacter[]): string {
   const described = new Set<number>();
   return replies
     .map((reply) => {
-      const hint = described.has(reply.character) ? "" : characterVoiceHint(characters[reply.character]);
+      // The voice description once; the manner before every reply, since the speakers alternate.
+      const character = characters[reply.character];
+      const hint = described.has(reply.character) ? "" : characterVoiceHint(character);
       described.add(reply.character);
-      return `<|speaker:${reply.character}|>${hint}${reply.text}`;
+      return `<|speaker:${reply.character}|>${hint}${characterStyleHint(character)}${reply.text}`;
     })
     .join(" ");
 }
@@ -674,7 +706,7 @@ export function splitChapter(text: string, maxChars: number, characters: DramaCh
   const list = characters.map((c) => ({ ...c }));
   let narrator = findNarrator(list);
   if (narrator < 0) {
-    list.push({ id: "chapter-narrator", name: "Рассказчик", voice: "none", description: "" });
+    list.push({ id: "chapter-narrator", name: "Рассказчик", voice: "none", description: "", style: "" });
     narrator = list.length - 1;
   }
   const { script } = markupBookText(text, list, narrator);
