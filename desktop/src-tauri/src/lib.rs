@@ -4682,6 +4682,69 @@ fn drama_temp_path(name: String) -> Result<String, String> {
     Ok(dir.join(name).to_string_lossy().into_owned())
 }
 
+// ─── Проекты Drama Studio: папка с project.json и audio/*.wav ───
+
+/// Имя папки из имени проекта: буквы любого языка, цифры, пробел, - и _ остаются,
+/// запрещённое в Windows заменяется на _.
+fn project_folder_name(name: &str) -> String {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() || ch == ' ' || ch == '-' || ch == '_' { ch } else { '_' })
+        .take(60)
+        .collect();
+    let cleaned = cleaned.trim_matches(|c: char| c == ' ' || c == '.' || c == '_').to_string();
+    if cleaned.is_empty() { "project".into() } else { cleaned }
+}
+
+/// Папка проекта по умолчанию: projects/<имя> рядом с программой.
+#[tauri::command]
+fn project_default_dir(name: String) -> String {
+    let safe = project_folder_name(&name);
+    let base = app_root_dir().join("projects");
+    let mut dir = base.join(&safe);
+    let mut n = 2;
+    while dir.join("project.json").exists() {
+        dir = base.join(format!("{safe}_{n}"));
+        n += 1;
+    }
+    dir.to_string_lossy().into_owned()
+}
+
+/// Создаёт папку проекта и её папку audio.
+#[tauri::command]
+fn project_prepare_dir(dir: String) -> Result<(), String> {
+    std::fs::create_dir_all(PathBuf::from(&dir).join("audio")).map_err(|e| e.to_string())
+}
+
+/// Содержимое файла в base64 (дубль проекта читается как есть, без перекодирования).
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(base64_encode(&bytes))
+}
+
+/// Удаляет из audio/ проекта WAV-файлы, которых нет в `keep` (переделанные дубли).
+/// Трогает только *.wav прямо в <dir>/audio.
+#[tauri::command]
+fn project_cleanup_audio(dir: String, keep: Vec<String>) -> Result<usize, String> {
+    let audio = PathBuf::from(&dir).join("audio");
+    let keep: HashSet<String> = keep.into_iter().collect();
+    let mut removed = 0;
+    let Ok(entries) = std::fs::read_dir(&audio) else {
+        return Ok(0);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_wav = path.extension().map(|e| e.eq_ignore_ascii_case("wav")).unwrap_or(false);
+        if path.is_file() && is_wav && !keep.contains(&name) && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Путь общего файла голосов сцены (несколько персонажей): drama-voices рядом с программой.
 /// `key` — короткий хеш состава персонажей, только [0-9a-z].
 #[tauri::command]
@@ -4861,6 +4924,10 @@ pub fn run() {
             drama_voice_make,
             drama_scene_voice_path,
             drama_temp_path,
+            project_default_dir,
+            project_prepare_dir,
+            read_file_base64,
+            project_cleanup_audio,
             drama_log,
         ])
         .run(tauri::generate_context!())

@@ -5901,6 +5901,7 @@ let sceneLinePlaying = -1;
 
 function persistDramaScene(): void {
   saveDramaScene(dramaScene);
+  scheduleProjectSave();
 }
 
 function sceneColor(index: number): string {
@@ -6174,6 +6175,7 @@ function renderDramaScene(): void {
 }
 
 function renderSceneLineResults(): void {
+  scheduleProjectSave();
   const section = el<HTMLElement>("#scene-results");
   const list = el<HTMLElement>("#scene-results-list");
   section.classList.toggle("hidden", sceneLines.length === 0);
@@ -7940,6 +7942,7 @@ function renderMontageHistorySelect(): void {
 }
 
 function renderMontage(): void {
+  scheduleProjectSave();
   const list = el<HTMLElement>("#montage-list");
   list.innerHTML = "";
   if (montageClips.length === 0) {
@@ -8174,14 +8177,24 @@ function saveChapterSettings(): void {
   } catch {
     // A very long chapter may not fit: the settings are a convenience.
   }
+  scheduleProjectSave();
 }
 
-function loadChapterSettings(): void {
-  let saved: Partial<ChapterSettings> = {};
-  try {
-    saved = JSON.parse(localStorage.getItem(CHAPTER_STORAGE_KEY) || "{}") || {};
-  } catch {
-    saved = {};
+/** Puts chapter settings into the form: from a project, or the last ones remembered. */
+function loadChapterSettings(fromProject?: Partial<ChapterSettings>): void {
+  let saved: Partial<ChapterSettings> = fromProject ?? {};
+  if (!fromProject) {
+    try {
+      saved = JSON.parse(localStorage.getItem(CHAPTER_STORAGE_KEY) || "{}") || {};
+    } catch {
+      saved = {};
+    }
+  }
+  if (fromProject && typeof saved.voice === "string") {
+    const select = el<HTMLSelectElement>("#chapter-voice");
+    select.dataset.saved = saved.voice;
+    select.value = "";
+    refreshChapterVoiceOptions();
   }
   if (typeof saved.text === "string") el<HTMLTextAreaElement>("#chapter-text").value = saved.text;
   if (typeof saved.useCharacters === "boolean") el<HTMLInputElement>("#chapter-use-characters").checked = saved.useCharacters;
@@ -8256,6 +8269,7 @@ const CHAPTER_STATUS_LABEL: Record<ChapterPieceStatus, string> = {
 };
 
 function renderChapterPieces(): void {
+  scheduleProjectSave();
   const list = el<HTMLElement>("#chapter-pieces");
   list.innerHTML = "";
   chapterPieces.forEach((piece, index) => {
@@ -8423,6 +8437,7 @@ async function voiceChapterPiece(piece: ChapterPieceState): Promise<void> {
 /** Voices the pieces that need it (all waiting ones, or the marked ones), in order. */
 async function runChapter(onlyMarked = false): Promise<void> {
   if (chapterRunning) return;
+  if (!onlyMarked) await offerProjectBeforeLongRun();
   if (chapterPieces.length === 0 && !splitChapterIntoPieces()) return;
   if (!(await ensureDramaLoaded())) return;
   const todo = chapterPieces.filter((p) =>
@@ -8907,6 +8922,356 @@ function initVoiceStudio(): void {
   el("#studio-test").addEventListener("click", () => void studioTrialTake(false));
   el("#studio-test-original").addEventListener("click", () => void studioTrialTake(true));
   el("#studio-save").addEventListener("click", () => void studioSaveVoice());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Projects: a folder with project.json and audio/*.wav. Holds the Chapter (text,
+// settings, pieces with their takes), the Multi Speaker scene with its lines, and
+// the Montage. Saved automatically a moment after each change.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const PROJECT_FORMAT = "drama-studio-project";
+const LAST_PROJECT_STORAGE_KEY = "dramaStudio.lastProject";
+
+type SavedTake = { file: string; seed?: number; stop?: string; seconds?: number };
+type SavedPiece = Omit<ChapterPieceState, "result"> & { take: SavedTake | null };
+type ProjectFile = {
+  format: typeof PROJECT_FORMAT;
+  version: 1;
+  name: string;
+  savedAt: number;
+  tts: { text: string; voice: string };
+  chapter: { settings: ChapterSettings; characters: DramaCharacter[]; pieces: SavedPiece[]; joined: string | null };
+  scene: {
+    scene: DramaScene;
+    lines: Array<{ reply: SceneReply; take: SavedTake }>;
+    linesPause: number;
+    linesCharacters: DramaCharacter[];
+  };
+  montage: {
+    clips: Array<{ id: string; label: string; speed: number; pauseAfter: number; take: SavedTake }>;
+    joined: string | null;
+    normalize: boolean;
+    speed: number;
+  };
+};
+
+let currentProject: { dir: string; name: string } | null = null;
+let projectLoading = false;
+let projectSaving = false;
+let projectSaveAgain = false;
+let projectSaveTimer: number | null = null;
+let projectSavedAt = 0;
+/** File name → the audio last written there (compared by reference: unchanged takes are not rewritten). */
+let projectWritten = new Map<string, string>();
+
+function projectAudioPath(file: string): string {
+  return `${currentProject!.dir}\\audio\\${file}`;
+}
+
+function renderProjectPanel(state?: "saving" | "error", detail?: string): void {
+  setText("#project-name", currentProject ? currentProject.name : t("No project"));
+  const badge = el<HTMLElement>("#project-state");
+  const label = !currentProject
+    ? t("Not saved")
+    : state === "saving" ? t("Saving…")
+    : state === "error" ? t("Error")
+    : projectSavedAt ? `${t("Saved")} ${new Date(projectSavedAt).toLocaleTimeString().slice(0, 5)}` : t("Open");
+  badge.textContent = label;
+  badge.classList.toggle("ok", Boolean(currentProject) && state !== "error");
+  el("#project-detail").textContent = detail ?? (currentProject
+    ? currentProject.dir
+    : t("Work is kept only until the program closes. Create a project to keep it on disk."));
+  el<HTMLButtonElement>("#project-save").disabled = !currentProject;
+}
+
+/** Saves the project a moment after the last change (changes come in bursts). */
+function scheduleProjectSave(delay = 1500): void {
+  if (!currentProject || projectLoading) return;
+  if (projectSaveTimer) window.clearTimeout(projectSaveTimer);
+  projectSaveTimer = window.setTimeout(() => {
+    projectSaveTimer = null;
+    void saveProject();
+  }, delay);
+}
+
+async function writeProjectTake(file: string, wavBase64: string): Promise<void> {
+  if (projectWritten.get(file) === wavBase64) return;
+  await invoke("save_binary_file", { path: projectAudioPath(file), base64Data: wavBase64 });
+  projectWritten.set(file, wavBase64);
+}
+
+async function saveProject(): Promise<void> {
+  if (!currentProject || projectLoading) return;
+  if (projectSaving) {
+    projectSaveAgain = true;
+    return;
+  }
+  projectSaving = true;
+  renderProjectPanel("saving");
+  try {
+    await invoke("project_prepare_dir", { dir: currentProject.dir });
+    const keep: string[] = [];
+    const takeOf = async (file: string, result: GenerationResult & { seed?: number; stop?: string; seconds?: number }): Promise<SavedTake> => {
+      await writeProjectTake(file, result.wavBase64);
+      keep.push(file);
+      return { file, seed: result.seed, stop: result.stop, seconds: result.seconds };
+    };
+
+    const pieces: SavedPiece[] = [];
+    for (const piece of chapterPieces) {
+      const { result, ...rest } = piece;
+      pieces.push({ ...rest, status: rest.status === "generating" ? "waiting" : rest.status, take: result ? await takeOf(`chapter_${piece.id}.wav`, result) : null });
+    }
+    const chapterJoined = chapterResult ? (await takeOf("chapter_joined.wav", chapterResult)).file : null;
+
+    const lines: ProjectFile["scene"]["lines"] = [];
+    for (let i = 0; i < sceneLines.length; i++) {
+      lines.push({ reply: sceneLines[i].reply, take: await takeOf(`scene_${i + 1}.wav`, sceneLines[i].result) });
+    }
+
+    const clips: ProjectFile["montage"]["clips"] = [];
+    for (const clip of montageClips) {
+      clips.push({ id: clip.id, label: clip.label, speed: clip.speed, pauseAfter: clip.pauseAfter, take: await takeOf(`montage_${clip.id}.wav`, clip.result) });
+    }
+    const montageJoined = montageResult ? (await takeOf("montage_joined.wav", montageResult)).file : null;
+
+    const file: ProjectFile = {
+      format: PROJECT_FORMAT,
+      version: 1,
+      name: currentProject.name,
+      savedAt: Date.now(),
+      tts: { text: el<HTMLTextAreaElement>("#tts-text").value, voice: el<HTMLSelectElement>("#drama-voice").value },
+      chapter: { settings: readChapterSettings(), characters: chapterCharacters, pieces, joined: chapterJoined },
+      scene: { scene: dramaScene, lines, linesPause: sceneLinesPause, linesCharacters: sceneLinesCharacters },
+      montage: {
+        clips,
+        joined: montageJoined,
+        normalize: el<HTMLInputElement>("#montage-normalize").checked,
+        speed: parseFloat(el<HTMLInputElement>("#montage-speed").value) || 1,
+      },
+    };
+    await invoke("save_text_file", { path: `${currentProject.dir}\\project.json`, content: JSON.stringify(file, null, 1) });
+    await invoke("project_cleanup_audio", { dir: currentProject.dir, keep });
+    for (const name of [...projectWritten.keys()]) if (!keep.includes(name)) projectWritten.delete(name);
+    projectSavedAt = file.savedAt;
+    renderProjectPanel();
+  } catch (e) {
+    renderProjectPanel("error", `${t("Could not save the project")}: ${e}`);
+  } finally {
+    projectSaving = false;
+    if (projectSaveAgain) {
+      projectSaveAgain = false;
+      scheduleProjectSave(300);
+    }
+  }
+}
+
+async function readProjectTake<T extends object>(take: SavedTake, extra: T): Promise<GenerationResult & T> {
+  const wavBase64 = await invoke<string>("read_file_base64", { path: projectAudioPath(take.file) });
+  const pcm = parseWavPcm(wavBase64);
+  return { sampleRate: pcm.sampleRate, channels: pcm.channels, sampleCount: pcm.samples.length, wavBase64, ...extra };
+}
+
+function dramaTake(take: SavedTake, result: GenerationResult): DramaGenerationResult {
+  return {
+    ...result,
+    seed: take.seed ?? 0,
+    stop: take.stop ?? "complete",
+    seconds: take.seconds ?? result.sampleCount / result.channels / result.sampleRate,
+  };
+}
+
+/** Opens the project in `dir` (a folder with project.json), replacing the current work. */
+async function openProject(dir: string, quiet = false): Promise<boolean> {
+  let file: ProjectFile;
+  try {
+    file = JSON.parse(await invoke<string>("read_text_file", { path: `${dir}\\project.json` }));
+    if (file.format !== PROJECT_FORMAT) throw new Error(t("not a Drama Studio project"));
+  } catch (e) {
+    if (!quiet) showToast(`${t("Could not open the project")}: ${e}`, "error");
+    return false;
+  }
+  projectLoading = true;
+  currentProject = { dir, name: file.name };
+  projectWritten = new Map();
+  renderProjectPanel(undefined, t("Opening the project…"));
+  let missing = 0;
+  try {
+    // TTS
+    el<HTMLTextAreaElement>("#tts-text").value = file.tts?.text || "";
+    el<HTMLTextAreaElement>("#tts-text").dispatchEvent(new Event("input"));
+    if (file.tts?.voice) selectDramaVoice(file.tts.voice);
+
+    // Chapter
+    loadChapterSettings(file.chapter.settings);
+    renderChapterCharacterTools();
+    chapterCharacters = file.chapter.characters || [];
+    chapterPieces = [];
+    for (const saved of file.chapter.pieces || []) {
+      const { take, ...rest } = saved;
+      let result: DramaGenerationResult | null = null;
+      if (take) {
+        try {
+          result = dramaTake(take, await readProjectTake(take, {}));
+          projectWritten.set(take.file, result.wavBase64);
+        } catch {
+          missing += 1;
+        }
+      }
+      chapterPieces.push({ ...rest, result, status: result ? rest.status : "waiting" });
+    }
+    chapterResult = null;
+    el("#chapter-output").classList.add("hidden");
+    if (file.chapter.joined) {
+      try {
+        const joined = await readProjectTake({ file: file.chapter.joined }, {});
+        projectWritten.set(file.chapter.joined, joined.wavBase64);
+        showChapterResult(joined);
+      } catch {
+        missing += 1;
+      }
+    }
+    renderChapterPieces();
+
+    // Scene
+    dramaScene = file.scene.scene;
+    saveDramaScene(dramaScene);
+    renderDramaScene();
+    sceneLines = [];
+    for (const line of file.scene.lines || []) {
+      try {
+        const result = dramaTake(line.take, await readProjectTake(line.take, {}));
+        projectWritten.set(line.take.file, result.wavBase64);
+        sceneLines.push({ reply: line.reply, result });
+      } catch {
+        missing += 1;
+      }
+    }
+    sceneLinesPause = file.scene.linesPause ?? 0.35;
+    sceneLinesCharacters = file.scene.linesCharacters || [];
+    renderSceneLineResults();
+
+    // Montage
+    montageClips = [];
+    for (const clip of file.montage.clips || []) {
+      try {
+        const result = await readProjectTake(clip.take, {});
+        projectWritten.set(clip.take.file, result.wavBase64);
+        montageClips.push({ id: clip.id, label: clip.label, speed: clip.speed, pauseAfter: clip.pauseAfter, result });
+      } catch {
+        missing += 1;
+      }
+    }
+    el<HTMLInputElement>("#montage-normalize").checked = file.montage.normalize !== false;
+    el<HTMLInputElement>("#montage-speed").value = String(file.montage.speed || 1);
+    el<HTMLInputElement>("#montage-speed").dispatchEvent(new Event("input"));
+    montageResult = null;
+    el("#montage-output").classList.add("hidden");
+    if (file.montage.joined) {
+      try {
+        const joined = await readProjectTake({ file: file.montage.joined }, {});
+        projectWritten.set(file.montage.joined, joined.wavBase64);
+        showMontageResult(joined);
+      } catch {
+        missing += 1;
+      }
+    }
+    renderMontage();
+
+    localStorage.setItem(LAST_PROJECT_STORAGE_KEY, dir);
+    projectSavedAt = file.savedAt;
+  } finally {
+    projectLoading = false;
+    renderProjectPanel();
+  }
+  if (missing > 0) showToast(`${t("Project opened, but some takes were not found")}: ${missing}`, "warning");
+  else if (!quiet) showToast(`${t("Project opened")}: ${file.name}`);
+  return true;
+}
+
+/** Makes `dir` the current project with the work that is open now, and saves it. */
+async function startProject(dir: string, name: string): Promise<void> {
+  currentProject = { dir, name };
+  projectWritten = new Map();
+  projectSavedAt = 0;
+  localStorage.setItem(LAST_PROJECT_STORAGE_KEY, dir);
+  await saveProject();
+  showToast(`${t("Project saved")}: ${name}`);
+}
+
+/** Clears the Chapter, the scene's script and lines, and the Montage (characters stay). */
+function clearWorkForNewProject(): void {
+  chapterPieces = [];
+  chapterCharacters = [];
+  chapterResult = null;
+  el<HTMLTextAreaElement>("#chapter-text").value = "";
+  el("#chapter-output").classList.add("hidden");
+  renderChapterPieces();
+  dramaScene.script = "";
+  persistDramaScene();
+  renderDramaScene();
+  sceneLines = [];
+  renderSceneLineResults();
+  montageClips = [];
+  montageResult = null;
+  el("#montage-output").classList.add("hidden");
+  renderMontage();
+}
+
+async function newProject(): Promise<boolean> {
+  const name = await askText(t("New project"), t("Name of the project (a book, a chapter, a video):"), "");
+  if (!name) return false;
+  const hasWork = chapterPieces.length > 0 || sceneLines.length > 0 || montageClips.length > 0 || el<HTMLTextAreaElement>("#chapter-text").value.trim() !== "";
+  if (hasWork) {
+    const answer = await askChoice(t("New project"), t("Take the work that is open now into the new project, or start empty?"), [
+      { value: "cancel", label: t("Cancel") },
+      { value: "empty", label: t("Start empty") },
+      { value: "keep", label: t("Take the current work"), primary: true },
+    ]);
+    if (answer === "cancel" || answer === null) return false;
+    if (answer === "empty") clearWorkForNewProject();
+  }
+  const dir = await invoke<string>("project_default_dir", { name });
+  await startProject(dir, name);
+  return true;
+}
+
+async function saveProjectAs(): Promise<void> {
+  const selected = await open({ directory: true, multiple: false, title: t("Folder for the project") });
+  const dir = Array.isArray(selected) ? selected[0] : selected;
+  if (!dir) return;
+  const name = await askText(t("Save as…"), t("Name of the project:"), currentProject?.name || dir.split(/[/\\]/).pop() || "");
+  if (!name) return;
+  await startProject(dir, name);
+}
+
+async function openProjectDialog(): Promise<void> {
+  const selected = await open({ directory: true, multiple: false, title: t("Folder of a project") });
+  const dir = Array.isArray(selected) ? selected[0] : selected;
+  if (!dir) return;
+  if (currentProject) await saveProject();
+  await openProject(dir);
+}
+
+/** Before a long run without a project: offer to create one so nothing is lost. */
+async function offerProjectBeforeLongRun(): Promise<void> {
+  if (currentProject) return;
+  const answer = await askChoice(t("Keep the chapter on disk?"), t("Without a project, the voiced pieces are lost when the program closes. Create a project? Then every piece is saved as soon as it is voiced."), [
+    { value: "no", label: t("Without a project") },
+    { value: "yes", label: t("Create a project"), primary: true },
+  ]);
+  if (answer === "yes") await newProject();
+}
+
+function initProjects(): void {
+  el("#project-new").addEventListener("click", () => void newProject());
+  el("#project-open").addEventListener("click", () => void openProjectDialog());
+  el("#project-save").addEventListener("click", () => void saveProject());
+  el("#project-save-as").addEventListener("click", () => void saveProjectAs());
+  renderProjectPanel();
+  const last = localStorage.getItem(LAST_PROJECT_STORAGE_KEY);
+  if (last) void openProject(last, true);
 }
 
 function initMontage(): void {
@@ -9647,6 +10012,7 @@ function initTextCounting(): void {
   const ttsCount = el<HTMLElement>("#tts-count");
   ttsText.addEventListener("input", () => {
     ttsCount.textContent = String(ttsText.value.length);
+    scheduleProjectSave(3000);
   });
 }
 
@@ -9676,6 +10042,7 @@ async function main(): Promise<void> {
   initVoiceMixAndLock();
   initChapter();
   initVoiceStudio();
+  initProjects();
   // Dev builds only (tauri dev): lets headless UI checks add fragments without the file dialog.
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {

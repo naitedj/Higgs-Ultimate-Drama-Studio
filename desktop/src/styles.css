@@ -2432,3 +2432,5 @@ input[type="range"]::-moz-range-thumb {
 .studio-grid { display: grid; gap: 12px 20px; grid-template-columns: 1fr 1fr; margin: 10px 0; }
 .studio-grid .chapter-field .select-input, .studio-grid .chapter-field .text-input { flex: 1; min-width: 0; }
 .studio-audio { margin-top: 8px; width: 100%; }
+.project-name { font-size: 14px; font-weight: 700; margin: 2px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-detail { overflow-wrap: anywhere; }
