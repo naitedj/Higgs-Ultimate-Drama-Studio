@@ -31,7 +31,8 @@
           "$DOWNLOAD/**",
           "$DOCUMENT/**",
           "$AUDIO/**",
-          "$VIDEO/**"
+          "$VIDEO/**",
+          "**"
         ]
       }
     }

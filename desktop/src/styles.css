@@ -2441,3 +2441,8 @@ input[type="range"]::-moz-range-thumb {
 .dictionary-test-output { color: var(--accent); flex: 1; font-size: 13px; }
 .audiobook-tags { display: grid; gap: 4px 12px; grid-template-columns: 120px 1fr; align-items: center; }
 .audiobook-tags .field-label { margin: 0; }
+.video-preview { background: #000; border-radius: 4px; margin: 10px 0; max-height: 52vh; width: 100%; }
+.video-ffmpeg-field { flex: 1 1 320px; }
+.video-ffmpeg-field .text-input { flex: 1; min-width: 0; }
+.video-orig-row { flex: 1 1 280px; }
+.warn-text { color: #e0a33a; }

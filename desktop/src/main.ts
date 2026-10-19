@@ -1467,12 +1467,13 @@ function switchMode(mode: Mode): void {
     content.classList.toggle("hidden", content.id !== `mode-${mode}`);
   }
   // Hide generation UI in utility views.
-  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio" || mode === "subtitles";
+  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio" || mode === "subtitles" || mode === "video";
   if (mode === "batch") refreshBatchPersonaOptions();
   if (mode === "montage") renderMontageHistorySelect();
   if (mode === "chapter") refreshChapterVoiceOptions();
   if (mode === "voicestudio") renderStudioSources();
   if (mode === "subtitles") refreshSubsVoiceOptions();
+  if (mode === "video") void refreshVideoTrack();
   if (mode === "transcript") void refreshTranscriptModelNote();
   if (mode === "transcript" || mode === "clone") void refreshVoiceCleanNote();
   el<HTMLElement>("#advanced-details").classList.toggle("hidden", isUtility || activeEngine === "drama");
@@ -4703,7 +4704,7 @@ function applyEngineKind(kind: EngineKind): void {
   for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
     if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
   }
-  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio" || currentMode === "subtitles";
+  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio" || currentMode === "subtitles" || currentMode === "video";
   switchMode(unavailable ? "tts" : currentMode);
   if (drama) renderDramaChips();
   else void refreshHiggsChips();
@@ -9401,6 +9402,192 @@ function initSubtitles(): void {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Video: the video plays with the new track in step; ffmpeg (the user's) puts
+// the track into the video, picture copied, original sound optionally kept low.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const VIDEO_STORAGE_KEY = "dramaStudio.video";
+let videoPath = "";
+let videoFfmpeg = "";
+let videoFileTrack: GenerationResult | null = null;
+let videoTrackUrl = "";
+let videoTrackShown: GenerationResult | null = null;
+
+function saveVideoSettings(): void {
+  localStorage.setItem(VIDEO_STORAGE_KEY, JSON.stringify({
+    ffmpeg: el<HTMLInputElement>("#video-ffmpeg-path").value,
+    originalVolume: parseFloat(el<HTMLInputElement>("#video-orig-volume").value),
+    source: el<HTMLSelectElement>("#video-track-source").value,
+  }));
+}
+
+async function detectFfmpeg(): Promise<void> {
+  const custom = el<HTMLInputElement>("#video-ffmpeg-path").value.trim();
+  const found = await invoke<{ path: string | null; version: string | null }>("ffmpeg_detect", { custom: custom || null }).catch(() => ({ path: null, version: null }));
+  videoFfmpeg = found.path || "";
+  el("#video-ffmpeg-status").textContent = found.path
+    ? `✓ ${found.version}`
+    : t("ffmpeg not found: install it or choose ffmpeg.exe");
+  el("#video-ffmpeg-status").classList.toggle("warn-text", !found.path);
+}
+
+/** The track chosen for the video: the Subtitles, Montage or Chapter result, or a file. */
+function videoTrack(): GenerationResult | null {
+  const source = el<HTMLSelectElement>("#video-track-source").value;
+  if (source === "subs") return subsTrack;
+  if (source === "montage") return montageResult;
+  if (source === "chapter") return chapterResult;
+  return videoFileTrack;
+}
+
+async function refreshVideoTrack(): Promise<void> {
+  const track = videoTrack();
+  el("#video-track-info").textContent = track
+    ? `${formatTime(resultSeconds(track))}`
+    : t("not ready: build it in its tab first");
+  if (track === videoTrackShown) return;
+  videoTrackShown = track;
+  const audio = el<HTMLAudioElement>("#video-track-audio");
+  if (videoTrackUrl) URL.revokeObjectURL(videoTrackUrl);
+  videoTrackUrl = "";
+  if (!track) {
+    audio.removeAttribute("src");
+    return;
+  }
+  videoTrackUrl = URL.createObjectURL(await base64ToBlobAsync(track.wavBase64, "audio/wav"));
+  audio.src = videoTrackUrl;
+  audio.load();
+}
+
+/** Keeps the track playing in step with the video. */
+function initVideoSync(): void {
+  const video = el<HTMLVideoElement>("#video-preview");
+  const audio = el<HTMLAudioElement>("#video-track-audio");
+  const align = () => {
+    if (!audio.src) return;
+    if (Math.abs(audio.currentTime - video.currentTime) > 0.15) audio.currentTime = Math.min(video.currentTime, audio.duration || video.currentTime);
+  };
+  video.addEventListener("play", () => {
+    align();
+    audio.volume = audioPlayer.volume;
+    if (audio.src && video.currentTime < (audio.duration || Infinity)) void audio.play().catch(() => {});
+  });
+  video.addEventListener("pause", () => audio.pause());
+  video.addEventListener("seeked", align);
+  video.addEventListener("ratechange", () => { audio.playbackRate = video.playbackRate; });
+  video.addEventListener("timeupdate", () => {
+    if (!video.paused) align();
+  });
+}
+
+async function chooseVideo(): Promise<void> {
+  const selected = await open({ filters: [{ name: "Video", extensions: ["mp4", "mkv", "mov", "webm", "avi", "m4v"] }] });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) return;
+  videoPath = path;
+  el("#video-name").textContent = path.split(/[/\\]/).pop() || path;
+  const video = el<HTMLVideoElement>("#video-preview");
+  video.src = convertFileSrc(path);
+  video.volume = parseFloat(el<HTMLInputElement>("#video-orig-volume").value);
+  video.classList.remove("hidden");
+  video.load();
+}
+
+async function saveVideoWithTrack(): Promise<void> {
+  const track = videoTrack();
+  if (!videoPath) {
+    showToast(t("Choose a video first"), "warning");
+    return;
+  }
+  if (!track) {
+    showToast(t("The new track is not ready: build it in its tab first"), "warning");
+    return;
+  }
+  await detectFfmpeg();
+  if (!videoFfmpeg) {
+    showToast(t("ffmpeg not found: install it or choose ffmpeg.exe"), "warning");
+    return;
+  }
+  const base = (videoPath.split(/[/\\]/).pop() || "video").replace(/\.[^.]+$/, "");
+  const out = await save({ defaultPath: `${base} (озвучка).mp4`, filters: [{ name: "MP4 video", extensions: ["mp4"] }] });
+  if (!out) return;
+  const button = el<HTMLButtonElement>("#video-save");
+  button.disabled = true;
+  el("#video-status").textContent = t("Saving the video…");
+  try {
+    const audioPath = await invoke<string>("drama_temp_path", { name: "video_track.wav" });
+    await invoke("save_binary_file", { path: audioPath, base64Data: track.wavBase64 });
+    await invoke("ffmpeg_mux", {
+      ffmpeg: videoFfmpeg,
+      video: videoPath,
+      audio: audioPath,
+      out,
+      originalVolume: parseFloat(el<HTMLInputElement>("#video-orig-volume").value) || 0,
+    });
+    el("#video-status").textContent = `${t("Saved")}: ${out}`;
+    showToast(`${t("Video saved")}: ${out.split(/[/\\]/).pop()}`);
+  } catch (e) {
+    el("#video-status").textContent = "";
+    showToast(`${t("Could not save the video")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initVideo(): void {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VIDEO_STORAGE_KEY) || "{}");
+    if (typeof saved.ffmpeg === "string") el<HTMLInputElement>("#video-ffmpeg-path").value = saved.ffmpeg;
+    if (typeof saved.originalVolume === "number") el<HTMLInputElement>("#video-orig-volume").value = String(saved.originalVolume);
+    if (typeof saved.source === "string" && saved.source !== "file") el<HTMLSelectElement>("#video-track-source").value = saved.source;
+  } catch {
+    // Defaults stay.
+  }
+  const renderOrig = () => {
+    const v = parseFloat(el<HTMLInputElement>("#video-orig-volume").value);
+    el("#video-val-orig").textContent = `${Math.round(v * 100)}%`;
+    el<HTMLVideoElement>("#video-preview").volume = v;
+  };
+  renderOrig();
+  el("#video-orig-volume").addEventListener("input", () => {
+    renderOrig();
+    saveVideoSettings();
+  });
+  el("#video-ffmpeg-path").addEventListener("change", () => {
+    saveVideoSettings();
+    void detectFfmpeg();
+  });
+  el("#video-ffmpeg-browse").addEventListener("click", async () => {
+    const selected = await open({ filters: [{ name: "ffmpeg", extensions: ["exe"] }] });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    el<HTMLInputElement>("#video-ffmpeg-path").value = path;
+    saveVideoSettings();
+    await detectFfmpeg();
+  });
+  el("#video-ffmpeg-site").addEventListener("click", () => void openExternalUrl("https://ffmpeg.org/download.html"));
+  el("#video-open").addEventListener("click", () => void chooseVideo());
+  el("#video-track-source").addEventListener("change", async () => {
+    saveVideoSettings();
+    if (el<HTMLSelectElement>("#video-track-source").value === "file") {
+      const selected = await open({ filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "ogg"] }] });
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (path) {
+        try {
+          videoFileTrack = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: path });
+        } catch (e) {
+          showToast(`${t("Could not read the recording")}: ${e}`, "error");
+        }
+      }
+    }
+    await refreshVideoTrack();
+  });
+  el("#video-save").addEventListener("click", () => void saveVideoWithTrack());
+  initVideoSync();
+  void detectFfmpeg();
+}
+
 let audiobookSource: { result: GenerationResult; label: string } | null = null;
 
 function readAudiobookForm(): AudiobookExport {
@@ -10747,6 +10934,7 @@ async function main(): Promise<void> {
   initChapter();
   initVoiceStudio();
   initSubtitles();
+  initVideo();
   initProjects();
   initDictionary();
   initAudiobookExport();
@@ -10758,6 +10946,19 @@ async function main(): Promise<void> {
       applyGalleryReference,
       addSpeakerExtraRecordings,
       sceneLineAudio: () => sceneLines.map((l) => l.result.wavBase64),
+      setVideo: (path: string) => {
+        videoPath = path;
+        const video = el<HTMLVideoElement>("#video-preview");
+        video.src = convertFileSrc(path);
+        video.classList.remove("hidden");
+        video.load();
+      },
+      setVideoTrackFile: async (path: string) => {
+        videoFileTrack = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: path });
+        el<HTMLSelectElement>("#video-track-source").value = "file";
+        await refreshVideoTrack();
+      },
+      videoFfmpeg: () => videoFfmpeg,
       personas: () => speakerPersonas.map((p) => ({ id: p.id, name: p.name, refPath: p.refPath, refText: p.refText })),
     };
   }

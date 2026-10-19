@@ -4684,6 +4684,89 @@ fn drama_temp_path(name: String) -> Result<String, String> {
     Ok(dir.join(name).to_string_lossy().into_owned())
 }
 
+// ─── Видео: ffmpeg пользователя (замена звука в ролике) ───
+
+/// Команда без окна консоли (иначе на каждый вызов ffmpeg мигает чёрное окно).
+fn quiet_command(program: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
+fn ffmpeg_version_of(program: &str) -> Option<String> {
+    let output = quiet_command(program).arg("-version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).lines().next().map(|l| l.trim().to_string())
+}
+
+/// Находит ffmpeg: указанный путь, рядом с программой, в папке ffmpeg рядом с ней, в PATH.
+#[tauri::command]
+fn ffmpeg_detect(custom: Option<String>) -> serde_json::Value {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(path) = custom.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        candidates.push(path);
+    }
+    let root = app_root_dir();
+    for path in [root.join("ffmpeg.exe"), root.join("ffmpeg").join("ffmpeg.exe"), root.join("ffmpeg").join("bin").join("ffmpeg.exe")] {
+        candidates.push(path.to_string_lossy().into_owned());
+    }
+    candidates.push("ffmpeg".into());
+    for candidate in candidates {
+        if let Some(version) = ffmpeg_version_of(&candidate) {
+            return serde_json::json!({ "path": candidate, "version": version });
+        }
+    }
+    serde_json::json!({ "path": null, "version": null })
+}
+
+/// Ролик с новой звуковой дорожкой: изображение копируется без пережатия, звук — AAC.
+/// `original_volume` > 0 оставляет исходный звук ролика тихим фоном под озвучкой.
+#[tauri::command]
+async fn ffmpeg_mux(ffmpeg: String, video: String, audio: String, out: String, original_volume: f64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let run = |with_original: bool| -> Result<(), String> {
+            let mut command = quiet_command(&ffmpeg);
+            command.args(["-y", "-hide_banner", "-loglevel", "error", "-i"]).arg(&video).arg("-i").arg(&audio);
+            if with_original {
+                let volume = original_volume.clamp(0.0, 1.0);
+                command.args([
+                    "-filter_complex",
+                    &format!("[0:a]volume={volume:.3}[orig];[orig][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "[aout]",
+                ]);
+            } else {
+                command.args(["-map", "0:v:0", "-map", "1:a:0"]);
+            }
+            command.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]).arg(&out);
+            let output = command.output().map_err(|e| format!("ffmpeg не запустился: {e}"))?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+                Err(tail.into_iter().rev().collect::<Vec<_>>().join(" "))
+            }
+        };
+        if original_volume > 0.0 {
+            // A video without sound has no [0:a]: then only the new track.
+            run(true).or_else(|_| run(false))
+        } else {
+            run(false)
+        }
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 /// Студия голоса: высота тона (полутоны) и форманты («возраст») записи вокодером WORLD.
 /// Принимает и возвращает WAV в base64; результат моно 16 бит.
 #[tauri::command]
@@ -4960,6 +5043,8 @@ pub fn run() {
             drama_temp_path,
             project_default_dir,
             voice_morph_wav,
+            ffmpeg_detect,
+            ffmpeg_mux,
             project_prepare_dir,
             read_file_base64,
             project_cleanup_audio,

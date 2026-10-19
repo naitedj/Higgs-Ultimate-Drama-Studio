@@ -204,6 +204,7 @@
             <button class="mode-tab" data-mode="multi" role="tab" aria-selected="false">Multi Speaker</button>
             <button class="mode-tab drama-only hidden" data-mode="chapter" role="tab" aria-selected="false">Chapter</button>
             <button class="mode-tab drama-only hidden" data-mode="subtitles" role="tab" aria-selected="false">Subtitles</button>
+            <button class="mode-tab drama-only hidden" data-mode="video" role="tab" aria-selected="false">Video</button>
             <button class="mode-tab drama-only hidden" data-mode="voicestudio" role="tab" aria-selected="false">Voice Studio</button>
             <button class="mode-tab" data-mode="api" role="tab" aria-selected="false">API</button>
             <button class="mode-tab" data-mode="speakers" role="tab" aria-selected="false">Speaker Gallery</button>
@@ -999,6 +1000,50 @@
                 <button id="subs-save-mp3" class="compact-button" type="button">Save MP3</button>
                 <button id="subs-to-montage" class="compact-button" type="button">+ To montage</button>
               </div>
+            </div>
+          </div>
+
+          <!-- ═══ Video: preview with the new track, save the video with it ═══ -->
+          <div class="mode-content hidden" id="mode-video">
+            <div class="history-head">
+              <h3>Video</h3>
+            </div>
+            <p class="input-hint">Watch a video with the new dubbing track and save the video with it. The picture is copied as it is (fast, no quality loss); the original sound can stay as a quiet background. Needs ffmpeg, a free program.</p>
+            <div class="chapter-settings">
+              <label class="chapter-field video-ffmpeg-field">
+                <span>ffmpeg</span>
+                <input id="video-ffmpeg-path" class="text-input path-input" type="text" spellcheck="false" placeholder="ffmpeg.exe (found by itself if installed)" />
+              </label>
+              <button id="video-ffmpeg-browse" class="compact-button" type="button">📁 Browse…</button>
+              <button id="video-ffmpeg-site" class="link-button" type="button">Where to get ffmpeg →</button>
+              <span id="video-ffmpeg-status" class="input-hint"></span>
+            </div>
+            <div class="action-row">
+              <button id="video-open" class="compact-button" type="button">📂 Choose a video…</button>
+              <span id="video-name" class="input-hint"></span>
+            </div>
+            <video id="video-preview" class="video-preview hidden" controls preload="metadata"></video>
+            <audio id="video-track-audio" preload="auto"></audio>
+            <div class="chapter-settings">
+              <label class="chapter-field">
+                <span>New track</span>
+                <select id="video-track-source" class="select-input">
+                  <option value="subs">Subtitles: dubbing track</option>
+                  <option value="montage">Montage: joined track</option>
+                  <option value="chapter">Chapter: joined chapter</option>
+                  <option value="file">A file…</option>
+                </select>
+              </label>
+              <span id="video-track-info" class="input-hint"></span>
+              <label class="slider-label video-orig-row">
+                <span class="slider-name">Original sound</span>
+                <input type="range" id="video-orig-volume" min="0" max="1" step="0.05" value="0.15" />
+                <span class="slider-value" id="video-val-orig">15%</span>
+              </label>
+            </div>
+            <div class="action-row">
+              <button id="video-save" class="primary-btn" type="button">💾 Save the video</button>
+              <span id="video-status" class="input-hint"></span>
             </div>
           </div>
 
