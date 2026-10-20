@@ -47,6 +47,8 @@ import {
   shiftPitchAndTempo,
   trimEdgeSilence,
   frameCount,
+  mixBed,
+  DEFAULT_BED,
   loadPauseTrimSettings,
   pcmToResult,
   resamplePcm,
@@ -56,7 +58,7 @@ import {
   SPEED_MIN,
   timeStretch,
 } from "./audioEdit";
-import type { PauseTrimSettings } from "./audioEdit";
+import type { BedSettings, PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import { createWavePanel } from "./wavePanel";
 import { initEmotionBuilder, openEmotionBuilder } from "./emotionBuilder";
@@ -8382,6 +8384,90 @@ function showMontageResult(result: GenerationResult): void {
   montageWave?.show(result);
 }
 
+// ─── Background bed under the joined montage ───
+
+const BED_STORAGE_KEY = "dramaStudio.montageBed";
+let montageBed: { path: string; name: string; result: GenerationResult } | null = null;
+
+function readBedSettings(): BedSettings {
+  const num = (id: string, fallback: number) => {
+    const v = parseFloat(el<HTMLInputElement>(id).value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  return {
+    gainDb: num("#bed-gain", DEFAULT_BED.gainDb),
+    fadeIn: Math.max(0, num("#bed-fade-in", DEFAULT_BED.fadeIn)),
+    fadeOut: Math.max(0, num("#bed-fade-out", DEFAULT_BED.fadeOut)),
+    loop: el<HTMLInputElement>("#bed-loop").checked,
+    duckDb: el<HTMLInputElement>("#bed-duck").checked ? DEFAULT_BED.duckDb : 0,
+  };
+}
+
+function renderBed(): void {
+  el("#bed-name").textContent = montageBed ? montageBed.name : t("no background");
+  el<HTMLButtonElement>("#bed-remove").classList.toggle("hidden", !montageBed);
+  el("#bed-settings").classList.toggle("hidden", !montageBed);
+  el("#bed-val-gain").textContent = `${parseFloat(el<HTMLInputElement>("#bed-gain").value).toFixed(0)} dB`;
+}
+
+function saveBedSettings(): void {
+  try {
+    localStorage.setItem(BED_STORAGE_KEY, JSON.stringify({ path: montageBed?.path || "", name: montageBed?.name || "", ...readBedSettings(), duck: el<HTMLInputElement>("#bed-duck").checked }));
+  } catch {
+    // A convenience.
+  }
+  scheduleProjectSave();
+}
+
+async function setMontageBed(path: string, name: string, quiet = false): Promise<void> {
+  try {
+    const result = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: path });
+    montageBed = { path, name, result };
+  } catch (e) {
+    montageBed = null;
+    if (!quiet) showToast(`${t("Could not read the recording")}: ${e}`, "error");
+  }
+  renderBed();
+  saveBedSettings();
+}
+
+function applyBedSettings(saved: Record<string, any>): void {
+  const set = (id: string, v: unknown) => {
+    if (typeof v === "number" && Number.isFinite(v)) el<HTMLInputElement>(id).value = String(v);
+  };
+  set("#bed-gain", saved.gainDb);
+  set("#bed-fade-in", saved.fadeIn);
+  set("#bed-fade-out", saved.fadeOut);
+  if (typeof saved.loop === "boolean") el<HTMLInputElement>("#bed-loop").checked = saved.loop;
+  if (typeof saved.duck === "boolean") el<HTMLInputElement>("#bed-duck").checked = saved.duck;
+}
+
+function initMontageBed(): void {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BED_STORAGE_KEY) || "{}") || {};
+    applyBedSettings(saved);
+    if (saved.path) void setMontageBed(saved.path, saved.name || saved.path.split(/[/\\]/).pop(), true);
+  } catch {
+    // Start without a background.
+  }
+  el("#bed-pick").addEventListener("click", async () => {
+    const file = await pickAudioFile();
+    if (file) await setMontageBed(file.path, file.name);
+  });
+  el("#bed-remove").addEventListener("click", () => {
+    montageBed = null;
+    renderBed();
+    saveBedSettings();
+  });
+  for (const id of ["#bed-gain", "#bed-fade-in", "#bed-fade-out", "#bed-loop", "#bed-duck"]) {
+    el(id).addEventListener("input", () => {
+      renderBed();
+      saveBedSettings();
+    });
+  }
+  renderBed();
+}
+
 async function joinMontage(): Promise<void> {
   if (montageClips.length === 0 || montageJoining) return;
   montageJoining = true;
@@ -8416,8 +8502,9 @@ async function joinMontage(): Promise<void> {
     let joined: WavPcm = { sampleRate: rate, channels, samples };
     const speed = parseFloat(el<HTMLInputElement>("#montage-speed").value) || 1;
     joined = timeStretch(joined, speed);
+    if (montageBed) joined = mixBed(joined, parseWavPcm(montageBed.result.wavBase64), readBedSettings());
     showMontageResult(pcmToResult(joined));
-    showToast(`${t("Joined")}: ${montageClips.length} ${t("fragments")}`);
+    showToast(`${t("Joined")}: ${montageClips.length} ${t("fragments")}${montageBed ? ` · ${t("with background")}` : ""}`);
   } catch (e) {
     showToast(`${t("Could not join")}: ${e}`, "error");
   } finally {
@@ -10675,6 +10762,8 @@ type ProjectFile = {
     joined: string | null;
     normalize: boolean;
     speed: number;
+    /** Background under the joined track: the user's file and its settings. */
+    bed?: { path: string; name: string; duck: boolean } & BedSettings;
   };
   /** The History tab: takes with their seeds. */
   history?: Array<Omit<HistoryEntry, "wavBase64"> & { take: SavedTake }>;
@@ -10806,6 +10895,7 @@ async function saveProject(): Promise<void> {
         joined: montageJoined,
         normalize: el<HTMLInputElement>("#montage-normalize").checked,
         speed: parseFloat(el<HTMLInputElement>("#montage-speed").value) || 1,
+        bed: montageBed ? { path: montageBed.path, name: montageBed.name, duck: el<HTMLInputElement>("#bed-duck").checked, ...readBedSettings() } : undefined,
       },
       subtitles: { settings: readSubsSettings(), characters: subsCharacters, cues },
       book: { chapters: bookChapters, active: bookActive },
@@ -10957,6 +11047,10 @@ async function openProject(dir: string, quiet = false): Promise<boolean> {
     }
     el<HTMLInputElement>("#montage-normalize").checked = file.montage.normalize !== false;
     el<HTMLInputElement>("#montage-speed").value = String(file.montage.speed || 1);
+    if (file.montage.bed?.path) {
+      applyBedSettings(file.montage.bed);
+      await setMontageBed(file.montage.bed.path, file.montage.bed.name, true);
+    }
     el<HTMLInputElement>("#montage-speed").dispatchEvent(new Event("input"));
     montageResult = null;
     el("#montage-output").classList.add("hidden");
@@ -11869,6 +11963,7 @@ async function main(): Promise<void> {
   initBook();
   initFoundVoices();
   initVoiceSamples();
+  initMontageBed();
   initVoiceStudio();
   initSubtitles();
   initVideo();
@@ -11881,6 +11976,7 @@ async function main(): Promise<void> {
       addMontageClip,
       lastResult: () => lastResult,
       exportBookM4b,
+      setMontageBed,
       confirmDramaVram: () => confirmDramaVram(dramaPathsFromInputs().modelPath, dramaPathsFromInputs().device),
       montageResult: () => montageResult,
       applyGalleryReference,

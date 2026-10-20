@@ -1143,6 +1143,30 @@
               </label>
               <button id="montage-join" class="primary-btn" type="button">⧉ Join</button>
             </div>
+            <div class="montage-bed-row">
+              <span class="field-label">Background</span>
+              <button id="bed-pick" class="compact-button" type="button" title="Quiet music or a sound (rain, street) under the voice: WAV, MP3, FLAC…">🎵 Choose…</button>
+              <span id="bed-name" class="api-status-text"></span>
+              <button id="bed-remove" class="icon-button danger hidden" type="button" title="No background">✕</button>
+              <div id="bed-settings" class="montage-bed-settings hidden">
+                <label class="slider-label">
+                  <span class="slider-name">Volume</span>
+                  <input type="range" id="bed-gain" min="-40" max="-6" step="1" value="-22" />
+                  <span class="slider-value" id="bed-val-gain">-22 dB</span>
+                </label>
+                <label class="chapter-field"><span>Fade in, s</span><input id="bed-fade-in" type="number" class="number-input" min="0" max="20" step="0.5" value="2" /></label>
+                <label class="chapter-field"><span>Fade out, s</span><input id="bed-fade-out" type="number" class="number-input" min="0" max="20" step="0.5" value="3" /></label>
+                <label class="inline-toggle" title="Repeat the background when it is shorter than the voice">
+                  <span>Loop</span>
+                  <span class="toggle-switch"><input type="checkbox" id="bed-loop" checked /><span class="toggle-slider"></span></span>
+                </label>
+                <label class="inline-toggle" title="The background gets quieter while the voice speaks and comes back in the pauses">
+                  <span>Lower under the voice</span>
+                  <span class="toggle-switch"><input type="checkbox" id="bed-duck" checked /><span class="toggle-slider"></span></span>
+                </label>
+              </div>
+              <span class="input-hint montage-bed-hint">The background is mixed in when you press Join.</span>
+            </div>
             <div id="montage-output" class="montage-output hidden">
               <div class="output-head">
                 <h3>Joined track</h3>

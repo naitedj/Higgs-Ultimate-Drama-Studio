@@ -368,3 +368,73 @@ export function trimEdgeSilence(pcm: WavPcm, head = 0.05, tail = 0.1): WavPcm {
   const real = cuts.filter((c) => c.end > c.start);
   return real.length > 0 ? removeRanges(pcm, real) : pcm;
 }
+
+// ─── Background bed ─────────────────────────────────────────────────────────
+
+export type BedSettings = {
+  /** Bed level, dB (0 = as recorded). */
+  gainDb: number;
+  /** Fade in at the start and out at the end of the track, seconds. */
+  fadeIn: number;
+  fadeOut: number;
+  /** Repeat the bed when it is shorter than the voice. */
+  loop: boolean;
+  /** Lower the bed while the voice speaks, dB (0 = off). */
+  duckDb: number;
+};
+
+export const DEFAULT_BED: BedSettings = { gainDb: -22, fadeIn: 2, fadeOut: 3, loop: true, duckDb: -8 };
+
+/** The voice with `bed` under it, as long as the voice; peaks are kept under full scale. */
+export function mixBed(voice: WavPcm, bed: WavPcm, settings: BedSettings): WavPcm {
+  const ch = voice.channels;
+  const rate = voice.sampleRate;
+  const under = convertChannels(resamplePcm(bed, rate), ch);
+  const frames = frameCount(voice);
+  const bedFrames = frameCount(under);
+  if (frames === 0 || bedFrames === 0) return voice;
+  // Where the voice speaks (10 ms windows above −40 dBFS), smoothed: the bed dips there.
+  const window = Math.max(1, Math.round(rate * 0.01));
+  const windows = Math.ceil(frames / window);
+  const speaking = new Float32Array(windows);
+  const threshold = 32768 * Math.pow(10, -40 / 20);
+  for (let w = 0; w < windows; w++) {
+    let peak = 0;
+    const end = Math.min(frames, (w + 1) * window) * ch;
+    for (let i = w * window * ch; i < end; i++) peak = Math.max(peak, Math.abs(voice.samples[i]));
+    speaking[w] = peak > threshold ? 1 : 0;
+  }
+  // Attack 50 ms, release 400 ms.
+  const smooth = new Float32Array(windows);
+  let level = 0;
+  for (let w = 0; w < windows; w++) {
+    const k = speaking[w] > level ? 0.2 : 0.025;
+    level += (speaking[w] - level) * k;
+    smooth[w] = level;
+  }
+  const gain = Math.pow(10, settings.gainDb / 20);
+  const duck = Math.pow(10, Math.min(0, settings.duckDb) / 20);
+  const fadeIn = Math.max(0, settings.fadeIn) * rate;
+  const fadeOut = Math.max(0, settings.fadeOut) * rate;
+  const out = new Int16Array(voice.samples.length);
+  for (let f = 0; f < frames; f++) {
+    let b = f;
+    if (b >= bedFrames) {
+      if (!settings.loop) {
+        for (let c = 0; c < ch; c++) out[f * ch + c] = voice.samples[f * ch + c];
+        continue;
+      }
+      b %= bedFrames;
+    }
+    let g = gain * (1 - (1 - duck) * smooth[Math.floor(f / window)]);
+    if (fadeIn > 0 && f < fadeIn) g *= f / fadeIn;
+    if (fadeOut > 0 && f > frames - fadeOut) g *= Math.max(0, (frames - f) / fadeOut);
+    // Without a loop the bed fades out over its own last second.
+    if (!settings.loop && b > bedFrames - rate) g *= Math.max(0, (bedFrames - b) / rate);
+    for (let c = 0; c < ch; c++) {
+      const v = voice.samples[f * ch + c] + under.samples[b * ch + c] * g;
+      out[f * ch + c] = Math.max(-32768, Math.min(32767, Math.round(v)));
+    }
+  }
+  return { sampleRate: rate, channels: ch, samples: out };
+}
