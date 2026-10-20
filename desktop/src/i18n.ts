@@ -674,6 +674,13 @@ export const RU: Record<string, string> = {
   "long pauses": "длинных пауз",
   "No pauses that long": "Таких длинных пауз нет",
   "Pauses shortened": "Паузы сокращены",
+  "Every part is recognised (Parakeet) and compared with the script; a part with missing words, silences or a cut end is voiced again with a new seed":
+    "Каждая часть распознаётся (Parakeet) и сверяется со сценарием; часть с пропущенными словами, тишиной или обрывом озвучивается заново с новым seed",
+  "How many new takes a bad part gets": "Сколько раз переозвучивать плохую часть",
+  "Takes for a bad part": "Попыток для плохой части",
+  "Parts that may have missing words": "Части, где могут быть пропуски",
+  "listen to them": "послушайте их",
+  "Parts redone after the check": "Переделано частей после проверки",
   "Mixed": "Смешанно",
   "Long narrator paragraphs on their own, the dialogue in one request": "Длинные абзацы рассказчика отдельно, диалоги одним запросом",
   "Long narrator paragraphs are read on their own in the narrator's voice (it keeps the voice better); the dialogue, with the short author's words between replies, goes in one request (livelier). The parts are joined with the pause.":

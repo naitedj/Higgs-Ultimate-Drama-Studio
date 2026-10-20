@@ -289,6 +289,10 @@ export type DramaScene = {
   pause: number;
   /** Bring every line (or part) to the same loudness. */
   level: boolean;
+  /** Check every part by recognition and redo a bad one (absent = on). */
+  check?: boolean;
+  /** New takes for a bad part (absent = 2). */
+  retries?: number;
 };
 
 export type SceneReply = {
@@ -324,6 +328,8 @@ export function loadDramaScene(): DramaScene {
         mode: raw.mode === "lines" || raw.mode === "mixed" ? raw.mode : "scene",
         pause: Number.isFinite(raw.pause) ? Math.min(1.5, Math.max(0, raw.pause)) : 0.35,
         level: typeof raw.level === "boolean" ? raw.level : true,
+        check: typeof raw.check === "boolean" ? raw.check : true,
+        retries: Number.isFinite(raw.retries) ? Math.min(5, Math.max(0, Math.round(raw.retries))) : 2,
       };
     }
   } catch {

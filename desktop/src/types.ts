@@ -252,6 +252,8 @@ export type GenerationJob = {
         sceneMode: "scene" | "lines" | "mixed";
         pause: number;
         level?: boolean;
+        check?: boolean;
+        retries?: number;
       };
 };
 

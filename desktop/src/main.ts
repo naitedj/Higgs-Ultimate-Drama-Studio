@@ -4255,6 +4255,8 @@ function loadQueuedJobForEdit(job: GenerationJob): void {
       mode: payload.sceneMode,
       pause: payload.pause,
       level: payload.level ?? true,
+      check: payload.check ?? true,
+      retries: payload.retries ?? 2,
     };
     saveDramaScene(dramaScene);
     renderDramaScene();
@@ -5717,6 +5719,8 @@ function captureDramaGenerationJob(overrideText?: string): GenerationJob {
       sceneMode: dramaScene.mode,
       pause: dramaScene.pause,
       level: dramaScene.level,
+      check: dramaScene.check !== false,
+      retries: dramaScene.retries ?? 2,
     };
   } else {
     const text = (overrideText ?? el<HTMLTextAreaElement>("#tts-text").value).trim();
@@ -6257,6 +6261,8 @@ function renderSceneMode(): void {
   el("#scene-pause-row").classList.toggle("hidden", !lines && !mixed);
   el<HTMLInputElement>("#scene-pause").value = String(dramaScene.pause);
   el<HTMLInputElement>("#scene-level").checked = dramaScene.level;
+  el<HTMLInputElement>("#scene-check").checked = dramaScene.check !== false;
+  el<HTMLInputElement>("#scene-retries").value = String(dramaScene.retries ?? 2);
   el("#scene-val-pause").textContent = dramaScene.pause.toFixed(2);
   setText("#scene-mode-hint", lines
     ? t("Each reply on its own, with its character's voice: every line gets a player and a Redo button, and the lines are joined with the pause.")
@@ -6433,6 +6439,48 @@ async function generateDramaScene(
   const bar = el<HTMLElement>("#gen-progress-bar");
   bar.classList.remove("indeterminate");
 
+  // Each part is checked (length, speed, words heard) and a bad one redone with new seeds.
+  const checking = payload.check ?? true;
+  const recognise = checking && Boolean(localStorage.getItem("higgsAudio.whisperModel"));
+  const retries = checking ? payload.retries ?? 2 : 0;
+  let redone = 0;
+  const stillBad: number[] = [];
+  const checkedTake = async (
+    request: { text: string; voice: string; options: Record<string, number | string | boolean> },
+    spoken: string,
+    number: number,
+    label: string,
+    stream = false,
+  ): Promise<DramaGenerationResult> => {
+    let best: { result: DramaGenerationResult; score: number; bad: boolean } | null = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const options = { ...request.options };
+      // The seed counts for the first take only; retries need other seeds.
+      if (attempt > 0) delete options.seed;
+      dramaPartLabel = `${label}${attempt > 0 ? `${t("take")} ${attempt + 1} · ` : ""}`;
+      const raw = await dramaGenerate({ request: { ...request, options, streamPlayback: stream && attempt === 0 } });
+      setDramaLastSeed(raw.seed);
+      if (raw.stop === "max_seconds") {
+        window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
+      }
+      const result = autoShortenPauses(raw);
+      if (!checking) return result;
+      const check = await checkTake(spoken, result, recognise, `scene_part_${number}.wav`);
+      if (!best || check.score > best.score) best = { result, score: check.score, bad: check.status === "bad" };
+      if (check.status !== "bad") break;
+      if (attempt < retries) redone += attempt === 0 ? 1 : 0;
+    }
+    if (best!.bad) stillBad.push(number);
+    return best!.result;
+  };
+  const reportChecks = () => {
+    if (!checking) return;
+    window.setTimeout(() => {
+      if (stillBad.length > 0) showToast(`${t("Parts that may have missing words")}: ${stillBad.join(", ")} — ${t("listen to them")}`, "warning");
+      else if (redone > 0) showToast(`${t("Parts redone after the check")}: ${redone}`);
+    }, 3500);
+  };
+
   if (payload.sceneMode === "lines") {
     sceneLines = [];
     sceneLinesPause = payload.pause;
@@ -6441,15 +6489,13 @@ async function generateDramaScene(
       dramaPartLabel = `${t("Line")} ${i + 1}/${replies.length} · `;
       setProgress("#gen-progress-bar", i, replies.length);
       const { text, voice } = sceneLineRequest(replies[i], characters);
-      const result = await dramaGenerate({
-        request: { text, voice, options: job.options, streamPlayback: false },
-      });
-      setDramaLastSeed(result.seed);
-      sceneLines.push({ reply: replies[i], result: await levelSceneTake(autoShortenPauses(result), level) });
+      const result = await checkedTake({ text, voice, options: job.options }, replies[i].text, i + 1, dramaPartLabel);
+      sceneLines.push({ reply: replies[i], result: await levelSceneTake(result, level) });
       renderSceneLineResults();
     }
     setProgress("#gen-progress-bar", 1, 1);
     reportAutoShortened();
+    reportChecks();
     return showJoinedSceneLines();
   }
 
@@ -6470,15 +6516,13 @@ async function generateDramaScene(
       const request = part.kind === "narration"
         ? sceneLineRequest({ ...part.reply, text: part.text }, characters)
         : { text: sceneText(part.replies, characters), voice: sharedVoice };
-      const result = await dramaGenerate({ request: { ...request, options, streamPlayback: false } });
-      setDramaLastSeed(result.seed);
-      if (result.stop === "max_seconds") {
-        window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
-      }
-      results.push(await levelSceneTake(autoShortenPauses(result), level));
+      const spoken = part.kind === "narration" ? part.text : part.replies.map((r) => r.text).join(" ");
+      const result = await checkedTake({ ...request, options }, spoken, i + 1, dramaPartLabel);
+      results.push(await levelSceneTake(result, level));
     }
     setProgress("#gen-progress-bar", 1, 1);
     reportAutoShortened();
+    reportChecks();
     return results.length === 1 ? results[0] : concatenateWavResults(results, payload.pause);
   }
 
@@ -6493,23 +6537,19 @@ async function generateDramaScene(
   for (let i = 0; i < parts.length; i++) {
     dramaPartLabel = parts.length > 1 ? `${t("Part")} ${i + 1}/${parts.length} · ` : "";
     setProgress("#gen-progress-bar", i, parts.length);
-    const result = await dramaGenerate({
-      request: {
-        text: sceneText(parts[i], characters),
-        voice,
-        options,
-        // Live playback only makes sense for one continuous request.
-        streamPlayback: streamPlayback && parts.length === 1,
-      },
-    });
-    setDramaLastSeed(result.seed);
-    if (result.stop === "max_seconds") {
-      window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
-    }
-    results.push(await levelSceneTake(autoShortenPauses(result), level));
+    const result = await checkedTake(
+      { text: sceneText(parts[i], characters), voice, options },
+      parts[i].map((r) => r.text).join(" "),
+      i + 1,
+      dramaPartLabel,
+      // Live playback only makes sense for one continuous request.
+      streamPlayback && parts.length === 1,
+    );
+    results.push(await levelSceneTake(result, level));
   }
   setProgress("#gen-progress-bar", 1, 1);
   reportAutoShortened();
+  reportChecks();
   return results.length === 1 ? results[0] : concatenateWavResults(results, 0.3);
 }
 
@@ -6602,6 +6642,16 @@ function initDramaScene(): void {
     persistDramaScene();
     renderSceneMode();
     renderScenePreview();
+  });
+  el<HTMLInputElement>("#scene-check").addEventListener("change", (event) => {
+    dramaScene.check = (event.target as HTMLInputElement).checked;
+    persistDramaScene();
+  });
+  el<HTMLInputElement>("#scene-retries").addEventListener("change", (event) => {
+    const v = Math.round(parseFloat((event.target as HTMLInputElement).value));
+    dramaScene.retries = Number.isFinite(v) ? Math.min(5, Math.max(0, v)) : 2;
+    (event.target as HTMLInputElement).value = String(dramaScene.retries);
+    persistDramaScene();
   });
   el<HTMLInputElement>("#scene-level").addEventListener("change", (event) => {
     dramaScene.level = (event.target as HTMLInputElement).checked;
@@ -8529,14 +8579,19 @@ function splitChapterIntoPieces(): boolean {
 type ChapterCheck = { status: "ok" | "warn" | "bad"; reason: string; coverage: number | null; score: number };
 
 /** Checks a take of a piece: the length limit, a believable speed, and the words heard. */
-async function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationResult, recognise: boolean): Promise<ChapterCheck> {
+function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationResult, recognise: boolean): Promise<ChapterCheck> {
+  return checkTake(piece.text, take, recognise, `chapter_${piece.id}.wav`);
+}
+
+/** Checks a take of `text` (tags and speaker marks are ignored): length limit, speed, words heard. */
+async function checkTake(text: string, take: DramaGenerationResult, recognise: boolean, fileName: string): Promise<ChapterCheck> {
   const problems: string[] = [];
   let status: ChapterCheck["status"] = "ok";
   if (take.stop === "max_seconds") {
     status = "bad";
     problems.push(t("hit the length limit: the end is missing"));
   }
-  const spoken = applyDictionary(piece.text, dictionary);
+  const spoken = applyDictionary(text, dictionary);
   const cps = charsPerSecond(spoken, take.seconds);
   const speakable = Math.round(cps * take.seconds);
   // A short reply ("Нет.") takes a second whatever its few letters: allow 2 s on top.
@@ -8552,7 +8607,7 @@ async function checkChapterTake(piece: ChapterPieceState, take: DramaGenerationR
   let coverage: number | null = null;
   if (recognise) {
     try {
-      const path = await invoke<string>("drama_temp_path", { name: `chapter_${piece.id}.wav` });
+      const path = await invoke<string>("drama_temp_path", { name: fileName });
       await invoke("save_binary_file", { path, base64Data: take.wavBase64 });
       const heard = await tryAutoTranscribeSilently(path);
       if (heard) {
