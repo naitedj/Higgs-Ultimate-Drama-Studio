@@ -9,7 +9,7 @@ import type { WavPcm } from "./types";
 
 export const AUDIOBOOK_EXPORT_STORAGE_KEY = "dramaStudio.audiobookExport";
 
-export type AudiobookFormat = "mp3-128" | "mp3-64" | "wav";
+export type AudiobookFormat = "mp3-128" | "mp3-64" | "wav" | "m4b-64" | "m4b-128";
 
 export type AudiobookExport = {
   format: AudiobookFormat;
@@ -21,6 +21,8 @@ export type AudiobookExport = {
   author: string;
   book: string;
   track: string;
+  /** The user's picture (JPG/PNG) put into the file as its cover; "" = none. */
+  coverPath: string;
 };
 
 export const AUDIOBOOK_TARGET_LUFS = -19;
@@ -30,7 +32,7 @@ const HEAD_SECONDS = 0.5;
 const TAIL_SECONDS = 1.0;
 
 export function loadAudiobookExport(): AudiobookExport {
-  const defaults: AudiobookExport = { format: "mp3-128", standard: true, roomTone: true, title: "", author: "", book: "", track: "" };
+  const defaults: AudiobookExport = { format: "mp3-128", standard: true, roomTone: true, title: "", author: "", book: "", track: "", coverPath: "" };
   try {
     const saved = JSON.parse(localStorage.getItem(AUDIOBOOK_EXPORT_STORAGE_KEY) || "{}");
     return { ...defaults, ...saved };
@@ -94,12 +96,34 @@ function utf16Text(text: string): Uint8Array {
   return bytes;
 }
 
-/** An ID3v2.3 tag with the given text frames (TIT2 title, TPE1 artist, TALB album, TRCK, TCON). */
-export function id3Tag(frames: Record<string, string>): Uint8Array {
+/** MIME type of a cover picture by its file name. */
+export function coverMime(path: string): string {
+  return /\.png$/i.test(path) ? "image/png" : "image/jpeg";
+}
+
+/** APIC body: front cover with no description. */
+function apicBody(cover: { mime: string; data: Uint8Array }): Uint8Array {
+  const mime = new TextEncoder().encode(cover.mime);
+  const body = new Uint8Array(1 + mime.length + 1 + 1 + 1 + cover.data.length);
+  let at = 0;
+  body[at++] = 0; // ISO-8859-1 description
+  body.set(mime, at);
+  at += mime.length;
+  body[at++] = 0;
+  body[at++] = 3; // front cover
+  body[at++] = 0; // empty description
+  body.set(cover.data, at);
+  return body;
+}
+
+/** An ID3v2.3 tag with the given text frames (TIT2 title, TPE1 artist, TALB album, TRCK, TCON) and a cover. */
+export function id3Tag(frames: Record<string, string>, cover?: { mime: string; data: Uint8Array }): Uint8Array {
   const parts: Uint8Array[] = [];
-  for (const [id, value] of Object.entries(frames)) {
-    if (!value.trim()) continue;
-    const body = utf16Text(value.trim());
+  const entries: Array<[string, Uint8Array]> = Object.entries(frames)
+    .filter(([, value]) => value.trim())
+    .map(([id, value]) => [id, utf16Text(value.trim())]);
+  if (cover) entries.push(["APIC", apicBody(cover)]);
+  for (const [id, body] of entries) {
     const header = new Uint8Array(10);
     for (let i = 0; i < 4; i++) header[i] = id.charCodeAt(i);
     const size = body.length;

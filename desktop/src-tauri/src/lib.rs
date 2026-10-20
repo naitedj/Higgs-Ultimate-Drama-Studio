@@ -4809,15 +4809,32 @@ async fn ffmpeg_mux(ffmpeg: String, video: String, audio: String, out: String, o
 /// Аудиокнига M4B: главы (WAV) склеиваются по списку concat, оглавление и теги —
 /// из файла FFMETADATA, звук AAC.
 #[tauri::command]
-async fn ffmpeg_m4b(ffmpeg: String, list: String, metadata: String, out: String, bitrate: u32) -> Result<(), String> {
+async fn ffmpeg_m4b(
+    ffmpeg: String,
+    list: String,
+    metadata: String,
+    out: String,
+    bitrate: u32,
+    cover: Option<String>,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let cover = cover.filter(|c| !c.trim().is_empty());
         let mut command = quiet_command(&ffmpeg);
         command
             .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
             .arg(&list)
             .arg("-i")
-            .arg(&metadata)
-            .args(["-map", "0:a", "-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a"])
+            .arg(&metadata);
+        if let Some(cover) = &cover {
+            command.arg("-i").arg(cover);
+        }
+        command.args(["-map", "0:a"]);
+        if cover.is_some() {
+            // The picture as the file's cover (attached picture), copied as it is.
+            command.args(["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]);
+        }
+        command
+            .args(["-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a"])
             .arg(format!("{}k", bitrate.clamp(32, 256)))
             .args(["-movflags", "+faststart", "-f", "mp4"])
             .arg(&out);

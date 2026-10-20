@@ -35,6 +35,7 @@ import {
 } from "./config";
 import {
   base64ToBlobAsync,
+  base64ToBytes,
   base64ToBytesAsync,
   bytesToBase64,
   concatenateWavResults,
@@ -66,7 +67,7 @@ import type { WavePanel } from "./wavePanel";
 import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
 import type { SubtitleCue } from "./subtitles";
 import { applyDictionary, DICTIONARY_STORAGE_KEY, loadDictionary, saveDictionary } from "./dictionary";
-import { AUDIOBOOK_TARGET_LUFS, audiobookFileName, id3Tag, loadAudiobookExport, m4bMetadata, masterAudiobook, saveAudiobookExport } from "./audiobook";
+import { AUDIOBOOK_TARGET_LUFS, audiobookFileName, coverMime, id3Tag, loadAudiobookExport, m4bMetadata, masterAudiobook, saveAudiobookExport } from "./audiobook";
 import type { AudiobookExport, AudiobookFormat } from "./audiobook";
 import type { DictionaryEntry } from "./dictionary";
 import {
@@ -9565,7 +9566,7 @@ async function exportBookM4b(outPath?: string): Promise<void> {
     await invoke("save_text_file", { path: listPath, content: `${list.join("\n")}\n` });
     await invoke("save_text_file", { path: metaPath, content: m4bMetadata({ title, author: settings.author }, chapters) });
     hint.textContent = `${t("Encoding M4B")}…`;
-    await invoke("ffmpeg_m4b", { ffmpeg: videoFfmpeg, list: listPath, metadata: metaPath, out, bitrate: settings.format === "mp3-128" ? 128 : 64 });
+    await invoke("ffmpeg_m4b", { ffmpeg: videoFfmpeg, list: listPath, metadata: metaPath, out, bitrate: settings.format === "m4b-128" ? 128 : 64, cover: settings.coverPath || null });
     showToast(`${t("Exported")}: ${out.split(/[/\\]/).pop()} · ${t("chapters")}: ${chapters.length} · ${formatTime(at / 1000)}`);
   } catch (e) {
     showToast(`${t("Could not make the M4B")}: ${e}`, "error");
@@ -9576,7 +9577,7 @@ async function exportBookM4b(outPath?: string): Promise<void> {
 }
 
 function initBook(): void {
-  el("#book-m4b").addEventListener("click", () => void exportBookM4b());
+  el("#book-m4b").addEventListener("click", () => openAudiobookExport(null, `${t("Book")}: ${bookChapters.length} ${t("chapters")}`, true));
   el<HTMLSelectElement>("#book-chapter").addEventListener("change", (event) => {
     void activateBookChapter(Number((event.target as HTMLSelectElement).value));
   });
@@ -10483,7 +10484,22 @@ function initVideo(): void {
   void detectFfmpeg();
 }
 
-let audiobookSource: { result: GenerationResult; label: string } | null = null;
+/** What the export window exports: one track, or the whole book as M4B. */
+let audiobookSource: { result: GenerationResult; label: string } | { book: true; label: string } | null = null;
+let audiobookCover = "";
+
+const SINGLE_FORMATS = `<option value="mp3-128">MP3 128 kbit/s</option><option value="mp3-64">${"MP3 64 kbit/s"}</option><option value="wav">WAV</option>`;
+const BOOK_FORMATS = `<option value="m4b-64">M4B (AAC 64 kbit/s)</option><option value="m4b-128">M4B (AAC 128 kbit/s)</option>`;
+
+function renderAudiobookCover(): void {
+  const img = el<HTMLImageElement>("#audiobook-cover-img");
+  img.classList.toggle("hidden", !audiobookCover);
+  if (audiobookCover) img.src = convertFileSrc(audiobookCover);
+  el("#audiobook-cover-name").textContent = audiobookCover ? audiobookCover.split(/[/\\]/).pop() || "" : t("no cover");
+  el<HTMLButtonElement>("#audiobook-cover-remove").classList.toggle("hidden", !audiobookCover);
+  const wav = el<HTMLSelectElement>("#audiobook-format").value === "wav";
+  el("#audiobook-cover-hint").textContent = wav ? t("WAV has no cover: choose MP3 or M4B.") : "";
+}
 
 function readAudiobookForm(): AudiobookExport {
   return {
@@ -10494,14 +10510,23 @@ function readAudiobookForm(): AudiobookExport {
     author: el<HTMLInputElement>("#audiobook-tag-author").value,
     book: el<HTMLInputElement>("#audiobook-tag-book").value,
     track: el<HTMLInputElement>("#audiobook-tag-track").value,
+    coverPath: audiobookCover,
   };
 }
 
-function openAudiobookExport(result: GenerationResult | null, label: string): void {
-  if (!result) return;
-  audiobookSource = { result, label };
+function openAudiobookExport(result: GenerationResult | null, label: string, book = false): void {
+  if (!result && !book) {
+    audiobookSource = null;
+    return;
+  }
+  audiobookSource = book ? { book: true, label } : { result: result!, label };
   const saved = loadAudiobookExport();
-  el<HTMLSelectElement>("#audiobook-format").value = saved.format;
+  const format = el<HTMLSelectElement>("#audiobook-format");
+  format.innerHTML = book ? BOOK_FORMATS : SINGLE_FORMATS;
+  format.value = saved.format;
+  if (!format.value) format.value = book ? "m4b-64" : "mp3-128";
+  audiobookCover = saved.coverPath || "";
+  renderAudiobookCover();
   el<HTMLInputElement>("#audiobook-standard").checked = saved.standard;
   el<HTMLInputElement>("#audiobook-room-tone").checked = saved.roomTone;
   // The title follows the project; author and book stay from the last export.
@@ -10509,7 +10534,7 @@ function openAudiobookExport(result: GenerationResult | null, label: string): vo
   el<HTMLInputElement>("#audiobook-tag-author").value = saved.author;
   el<HTMLInputElement>("#audiobook-tag-book").value = saved.book;
   el<HTMLInputElement>("#audiobook-tag-track").value = saved.track;
-  el("#audiobook-source").textContent = `${label} · ${formatTime(resultSeconds(result))}`;
+  el("#audiobook-source").textContent = result ? `${label} · ${formatTime(resultSeconds(result))}` : label;
   el("#audiobook-modal").classList.remove("hidden");
 }
 
@@ -10517,12 +10542,18 @@ function closeAudiobookExport(): void {
   el("#audiobook-modal").classList.add("hidden");
 }
 
-async function runAudiobookExport(): Promise<void> {
+async function runAudiobookExport(outPath?: string): Promise<void> {
   if (!audiobookSource) return;
   const settings = readAudiobookForm();
   saveAudiobookExport(settings);
+  scheduleProjectSave();
+  if ("book" in audiobookSource) {
+    closeAudiobookExport();
+    await exportBookM4b(outPath);
+    return;
+  }
   const isWav = settings.format === "wav";
-  const path = await save({
+  const path = outPath ?? await save({
     defaultPath: `${audiobookFileName(settings, audiobookSource.label)}.${isWav ? "wav" : "mp3"}`,
     filters: [isWav ? { name: "WAV Audio", extensions: ["wav"] } : { name: "MP3 Audio", extensions: ["mp3"] }],
   });
@@ -10542,13 +10573,21 @@ async function runAudiobookExport(): Promise<void> {
       data = wav;
     } else {
       const mp3 = await encodeMp3FromWav(wav, settings.format === "mp3-64" ? 64 : 128);
+      let cover: { mime: string; data: Uint8Array } | undefined;
+      if (settings.coverPath) {
+        try {
+          cover = { mime: coverMime(settings.coverPath), data: base64ToBytes(await invoke<string>("read_file_base64", { path: settings.coverPath })) };
+        } catch (e) {
+          showToast(`${t("Cover not found, exported without it")}: ${e}`, "warning");
+        }
+      }
       const tag = id3Tag({
         TIT2: settings.title,
         TPE1: settings.author,
         TALB: settings.book,
         TRCK: settings.track,
         TCON: "Audiobook",
-      });
+      }, cover);
       const bytes = new Uint8Array(tag.length + mp3.length);
       bytes.set(tag, 0);
       bytes.set(mp3, tag.length);
@@ -10568,6 +10607,18 @@ function initAudiobookExport(): void {
   el("#audiobook-close").addEventListener("click", closeAudiobookExport);
   el("#audiobook-cancel").addEventListener("click", closeAudiobookExport);
   el("#audiobook-save").addEventListener("click", () => void runAudiobookExport());
+  el("#audiobook-format").addEventListener("change", renderAudiobookCover);
+  el("#audiobook-cover-pick").addEventListener("click", async () => {
+    const selected = await open({ filters: [{ name: "Image", extensions: ["jpg", "jpeg", "png"] }] });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    audiobookCover = path;
+    renderAudiobookCover();
+  });
+  el("#audiobook-cover-remove").addEventListener("click", () => {
+    audiobookCover = "";
+    renderAudiobookCover();
+  });
   el("#chapter-audiobook").addEventListener("click", () => openAudiobookExport(chapterResult, t("Chapter")));
   el("#montage-audiobook").addEventListener("click", () => openAudiobookExport(montageResult, t("Montage")));
 }
@@ -10765,6 +10816,8 @@ type ProjectFile = {
     /** Background under the joined track: the user's file and its settings. */
     bed?: { path: string; name: string; duck: boolean } & BedSettings;
   };
+  /** The audiobook export settings of this book (tags, cover). */
+  audiobook?: AudiobookExport;
   /** The History tab: takes with their seeds. */
   history?: Array<Omit<HistoryEntry, "wavBase64"> & { take: SavedTake }>;
   /** All chapters of the book; `chapter` above is the active one (kept for older versions). */
@@ -10900,6 +10953,7 @@ async function saveProject(): Promise<void> {
       subtitles: { settings: readSubsSettings(), characters: subsCharacters, cues },
       book: { chapters: bookChapters, active: bookActive },
       history: savedHistory,
+      audiobook: loadAudiobookExport(),
     };
     await invoke("save_text_file", { path: `${currentProject.dir}\\project.json`, content: JSON.stringify(file, null, 1) });
     await invoke("project_cleanup_audio", { dir: currentProject.dir, keep });
@@ -10999,6 +11053,8 @@ async function openProject(dir: string, quiet = false): Promise<boolean> {
     }
     renderBook();
     renderChapterPieces();
+
+    if (file.audiobook) saveAudiobookExport({ ...loadAudiobookExport(), ...file.audiobook });
 
     // History (projects made before it was saved keep the present list).
     if (file.history) {
@@ -11977,6 +12033,12 @@ async function main(): Promise<void> {
       lastResult: () => lastResult,
       exportBookM4b,
       setMontageBed,
+      openAudiobookExport: (book: boolean) => openAudiobookExport(chapterResult, "Chapter", book),
+      setCover: (path: string) => {
+        audiobookCover = path;
+        renderAudiobookCover();
+      },
+      runAudiobookExport,
       confirmDramaVram: () => confirmDramaVram(dramaPathsFromInputs().modelPath, dramaPathsFromInputs().device),
       montageResult: () => montageResult,
       applyGalleryReference,

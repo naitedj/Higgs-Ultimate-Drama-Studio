@@ -1682,6 +1682,14 @@ Third phrase."></textarea>
               <label class="field-label" for="audiobook-tag-track">Track number</label>
               <input id="audiobook-tag-track" class="text-input" type="text" inputmode="numeric" />
             </div>
+            <div class="audiobook-cover-row">
+              <span class="field-label">Cover</span>
+              <img id="audiobook-cover-img" class="audiobook-cover-img hidden" alt="" />
+              <span id="audiobook-cover-name" class="api-status-text"></span>
+              <button id="audiobook-cover-pick" class="compact-button" type="button">🖼 Choose a picture…</button>
+              <button id="audiobook-cover-remove" class="icon-button danger hidden" type="button" title="No cover">✕</button>
+              <span id="audiobook-cover-hint" class="input-hint"></span>
+            </div>
           </div>
           <div class="modal-actions">
             <button id="audiobook-cancel" class="compact-button" type="button">Cancel</button>
