@@ -43,8 +43,12 @@ export const DRAMA_MAX_SECONDS_LIMIT = 95.1;
 export const DRAMA_STEADY_TEMPERATURE = 0.75;
 export const DRAMA_STEADY_TOP_P = 0.85;
 
+/**
+ * Drama Studio ships without the Higgs engine DLL, so it always starts with Drama 3
+ * (the switch is hidden). The Higgs code stays for a build that adds the DLL.
+ */
 export function getEngineKind(): EngineKind {
-  return localStorage.getItem(ENGINE_KIND_STORAGE_KEY) === "higgs" ? "higgs" : "drama";
+  return "drama";
 }
 
 export function setEngineKind(kind: EngineKind): void {

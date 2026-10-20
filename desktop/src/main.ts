@@ -4458,7 +4458,7 @@ function generationStepForPhase(phase: string): number {
 
 function generationElapsedLabel(prefix = "Elapsed"): string {
   const elapsed = genStartedAt > 0 ? ((performance.now() - genStartedAt) / 1000).toFixed(1) : "0.0";
-  return `${prefix} ${elapsed}s`;
+  return `${t(prefix)} ${elapsed} ${t("s")}`;
 }
 
 function setGenerationElapsedLabel(prefix = generationProgressPrefix): void {
@@ -6453,6 +6453,8 @@ function renderSceneLineResults(): void {
       <span class="scene-result-meta">${line.result.seconds.toFixed(1)} ${escapeHtml(t("s"))} · seed ${line.result.seed}</span>
       <span class="scene-result-actions">
         <button class="compact-button" data-action="edit" type="button" title="${escapeHtml(t("Cut pauses and pieces out of this line"))}" ${sceneLineBusy >= 0 ? "disabled" : ""}>✂</button>
+        <button class="compact-button" data-action="export" type="button" title="${escapeHtml(t("Save as WAV to edit it in another program"))}">⤓</button>
+        <button class="compact-button" data-action="import" type="button" title="${escapeHtml(t("Put back a file edited in another program instead of this take"))}" ${sceneLineBusy >= 0 ? "disabled" : ""}>⤒</button>
         <button class="compact-button" data-action="lock" type="button" title="${escapeHtml(t("Make this take the character's permanent voice"))}" ${sceneLineBusy >= 0 ? "disabled" : ""}>🔒</button>
         <button class="compact-button" data-action="redo" type="button" ${sceneLineBusy >= 0 || isGenerating ? "disabled" : ""}>${escapeHtml(busy ? t("Generating…") : t("↻ Redo"))}</button>
       </span>
@@ -6500,6 +6502,19 @@ function sceneLineRequest(reply: SceneReply, characters: DramaCharacter[]): { te
     throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
   }
   return { text: `${characterLineHint(character)}${reply.text}`, voice };
+}
+
+/** "⤒": a file edited in another program replaces the reply's take; the joined scene follows. */
+async function importEditedSceneLine(index: number): Promise<void> {
+  const line = sceneLines[index];
+  if (!line) return;
+  const take = await pickAudioAsTake();
+  if (!take) return;
+  const { name, ...result } = take;
+  sceneLines[index] = { reply: line.reply, result: { ...line.result, ...result, seed: line.result.seed } };
+  renderSceneLineResults();
+  showOutput(showJoinedSceneLines(), "multi");
+  showToast(`${t("Put back")}: ${name}`);
 }
 
 function editSceneLine(index: number): void {
@@ -6822,6 +6837,10 @@ function initDramaScene(): void {
     const index = Number(button.closest<HTMLElement>(".scene-result-row")?.dataset.index);
     if (button.dataset.action === "play") void playSceneLine(index);
     else if (button.dataset.action === "edit") editSceneLine(index);
+    else if (button.dataset.action === "export") {
+      const line = sceneLines[index];
+      if (line) void saveResultToFile(line.result, `${t("Line")} ${index + 1}`, "wav");
+    } else if (button.dataset.action === "import") void importEditedSceneLine(index);
     else if (button.dataset.action === "lock") void lockSceneLineVoice(index);
     else void redoSceneLine(index);
   });
@@ -7565,7 +7584,7 @@ async function doCancel(): Promise<void> {
   cancelRequested = true;
   const cancelBtn = el<HTMLButtonElement>("#cancel-btn");
   cancelBtn.disabled = true;
-  cancelBtn.textContent = "Cancelling...";
+  cancelBtn.textContent = t("Cancelling...");
   setGenerationElapsedLabel("Cancelling ·");
   try {
     await invoke("cancel_generation");
