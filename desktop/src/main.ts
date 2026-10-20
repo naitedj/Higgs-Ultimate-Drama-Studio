@@ -58,6 +58,8 @@ import {
 } from "./audioEdit";
 import type { PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
+import { createWavePanel } from "./wavePanel";
+import type { WavePanel } from "./wavePanel";
 import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
 import type { SubtitleCue } from "./subtitles";
 import { applyDictionary, DICTIONARY_STORAGE_KEY, loadDictionary, saveDictionary } from "./dictionary";
@@ -5749,6 +5751,13 @@ function setPauseTrim(next: PauseTrimSettings): void {
   el<HTMLInputElement>("#drama-auto-pauses").checked = pauseTrim.auto;
   el<HTMLInputElement>("#drama-pause-longer").value = String(pauseTrim.longerThan);
   el<HTMLInputElement>("#drama-pause-keep").value = String(pauseTrim.keep);
+  chapterWave?.refresh();
+  montageWave?.refresh();
+}
+
+/** The waveform panel with pauses under a joined track; edits go back through `show`. */
+function makeWavePanel(audioId: string, show: (result: GenerationResult) => void): WavePanel {
+  return createWavePanel({ audio: el<HTMLAudioElement>(audioId), settings: () => pauseTrim, onEdit: show, toast: showToast });
 }
 
 function editAudio(title: string, wavBase64: string, onSave: (result: GenerationResult) => Promise<void> | void): void {
@@ -7914,6 +7923,7 @@ const MONTAGE_NORMALIZE_STORAGE_KEY = "dramaStudio.montageNormalize";
 let montageClips: MontageClip[] = [];
 let montageResult: GenerationResult | null = null;
 let montageAudioUrl = "";
+let montageWave: WavePanel | null = null;
 const montageClipPlayer = new Audio();
 let montageClipPlayerUrl = "";
 let montagePlayingId = "";
@@ -8039,6 +8049,7 @@ function showMontageResult(result: GenerationResult): void {
   const seconds = resultSeconds(result);
   el("#montage-output-info").textContent = `${formatTime(seconds)} · ${result.sampleRate} ${t("Hz")}`;
   el("#montage-output").classList.remove("hidden");
+  montageWave?.show(result);
 }
 
 async function joinMontage(): Promise<void> {
@@ -8147,6 +8158,7 @@ let chapterRunning = false;
 let chapterStopRequested = false;
 let chapterResult: GenerationResult | null = null;
 let chapterAudioUrl = "";
+let chapterWave: WavePanel | null = null;
 const chapterPiecePlayer = new Audio();
 let chapterPiecePlayerUrl = "";
 let chapterPlayingId = "";
@@ -8579,6 +8591,7 @@ function showChapterResult(result: GenerationResult): void {
   });
   el("#chapter-output-info").textContent = `${formatTime(resultSeconds(result))} · ${result.sampleRate} ${t("Hz")}`;
   el("#chapter-output").classList.remove("hidden");
+  chapterWave?.show(result);
 }
 
 async function joinChapter(): Promise<void> {
@@ -8734,6 +8747,7 @@ function initChapter(): void {
     }
   });
 
+  chapterWave = makeWavePanel("#chapter-audio", showChapterResult);
   el("#chapter-edit").addEventListener("click", () => {
     if (chapterResult) editAudio(t("Chapter"), chapterResult.wavBase64, (edited) => showChapterResult(edited));
   });
@@ -10290,6 +10304,7 @@ function initMontage(): void {
     }
   });
 
+  montageWave = makeWavePanel("#montage-audio", showMontageResult);
   el("#montage-edit").addEventListener("click", () => {
     if (!montageResult) return;
     editAudio(t("Joined track"), montageResult.wavBase64, (edited) => showMontageResult(edited));

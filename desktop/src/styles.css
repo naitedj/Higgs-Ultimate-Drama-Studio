@@ -2356,6 +2356,10 @@ input[type="range"]::-moz-range-thumb {
 .montage-speed-row { flex: 1 1 280px; }
 .montage-output { border: 1px solid var(--border); border-radius: 4px; margin-top: 12px; padding: 12px; }
 .montage-output audio { width: 100%; }
+.wave-panel { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.wave-panel-canvas { border: 1px solid var(--border); border-radius: 4px; cursor: crosshair; height: 110px; width: 100%; }
+.wave-panel-row { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.wave-panel-info, .wave-panel-hint { color: var(--text-secondary); font-size: 12px; }
 .recent-montage { flex: 0 0 auto; font-size: 11px; min-height: 24px; padding: 2px 8px; }
 .choice-panel { max-width: 520px; width: min(520px, 92vw); }
 .choice-message { color: var(--text-secondary); font-size: 13px; line-height: 1.5; margin: 0; padding: 4px 16px 12px; }
