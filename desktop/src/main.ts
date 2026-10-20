@@ -5339,13 +5339,57 @@ function dramaPathsFromInputs(): { libraryPath: string; modelPath: string; devic
   };
 }
 
+/** Video memory the model needs above its weights (work buffers, the voice). */
+const DRAMA_VRAM_MARGIN = 1.2 * 1024 ** 3;
+
+/**
+ * Before loading: when another program (ComfyUI, a game, a video) holds the video
+ * memory, the model will not fit and part of it will run on the CPU, several times
+ * slower. Says so and asks whether to load anyway. True = go on.
+ */
+async function confirmDramaVram(modelPath: string, device: string): Promise<boolean> {
+  if (device === "cpu") return true;
+  try {
+    if (!dramaStatus.libraryLoaded) {
+      dramaStatus = await invoke<DramaStatus>("drama_load_library", { libraryPath: dramaPathsFromInputs().libraryPath || null });
+    }
+    const [info, devices] = await Promise.all([
+      invoke<DramaModelInfo>("drama_model_file_info", { modelPath: modelPath || dramaStatus.modelPath || "" }),
+      invoke<DramaDevice[]>("drama_devices"),
+    ]);
+    const gpu = device === "auto" || device === "gpu"
+      ? devices.find((d) => d.kind === "gpu") ?? devices.find((d) => d.kind !== "cpu")
+      : devices.find((d) => d.name === device);
+    if (!gpu || gpu.kind === "cpu" || !info.weightBytes) return true;
+    const need = info.weightBytes + DRAMA_VRAM_MARGIN;
+    if (gpu.freeBytes >= need) return true;
+    // Only worth asking when the card could hold the model if it were free.
+    if (gpu.totalBytes < need) return true;
+    const answer = await askChoice(
+      t("Not enough free video memory"),
+      `${t("Free")}: ${gigabytes(gpu.freeBytes)} ${t("of")} ${gigabytes(gpu.totalBytes)}, ${t("the model needs about")} ${gigabytes(need)}. ` +
+        t("Another program holds the video memory (for example ComfyUI, a second Drama Studio, a game or a video). If you load now, part of the model will run on the CPU: voicing will be several times slower and the program may even crash. Close that program and press Load again."),
+      [
+        { value: "cancel", label: t("Cancel") },
+        { value: "load", label: t("Load anyway (slow)"), primary: true },
+      ],
+    );
+    return answer === "load";
+  } catch (e) {
+    // The check is a help: when it cannot be made, loading goes on as before.
+    console.warn("video memory check:", e);
+    return true;
+  }
+}
+
 async function doLoadDrama(): Promise<boolean> {
   if (dramaLoading) return false;
   const { libraryPath, modelPath, device } = dramaPathsFromInputs();
+  await unloadHiggsToFreeVram().catch(() => {});
+  if (!(await confirmDramaVram(modelPath, device))) return false;
   dramaLoading = true;
   renderDramaStatus();
   try {
-    await unloadHiggsToFreeVram();
     const result = await invoke<{ modelInfo: DramaModelInfo; devices: DramaDevice[] }>("drama_load_model", {
       request: { libraryPath: libraryPath || null, modelPath: modelPath || null, device },
     });
@@ -11012,6 +11056,7 @@ async function main(): Promise<void> {
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
       addMontageClip,
+      confirmDramaVram: () => confirmDramaVram(dramaPathsFromInputs().modelPath, dramaPathsFromInputs().device),
       montageResult: () => montageResult,
       applyGalleryReference,
       addSpeakerExtraRecordings,

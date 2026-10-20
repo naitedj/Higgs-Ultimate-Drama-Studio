@@ -674,6 +674,12 @@ export const RU: Record<string, string> = {
   "long pauses": "длинных пауз",
   "No pauses that long": "Таких длинных пауз нет",
   "Pauses shortened": "Паузы сокращены",
+  "Not enough free video memory": "Мало свободной видеопамяти",
+  "Free": "Свободно",
+  "the model needs about": "модели нужно около",
+  "Another program holds the video memory (for example ComfyUI, a second Drama Studio, a game or a video). If you load now, part of the model will run on the CPU: voicing will be several times slower and the program may even crash. Close that program and press Load again.":
+    "Видеопамять занята другой программой (например, ComfyUI, вторая открытая Drama Studio, игра или видео). Если загрузить сейчас, часть модели пойдёт на процессор: озвучка будет в несколько раз медленнее, а программа может даже упасть. Закройте ту программу и снова нажмите «Загрузить модель».",
+  "Load anyway (slow)": "Всё равно загрузить (медленно)",
   "→ Next pause": "→ Следующая пауза",
   "Shorten all pauses": "Сократить все паузы",
   "Click: listen from there · click a red pause: select it · wheel: zoom": "Щелчок — слушать с этого места · щелчок по красной паузе — выделить её · колесо — масштаб",
