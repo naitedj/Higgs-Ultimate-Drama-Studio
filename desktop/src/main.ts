@@ -63,6 +63,7 @@ import type { BedSettings, PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import { createWavePanel } from "./wavePanel";
 import { initEmotionBuilder, openEmotionBuilder } from "./emotionBuilder";
+import { initHelp } from "./helpWindow";
 import type { WavePanel } from "./wavePanel";
 import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
 import type { SubtitleCue } from "./subtitles";
@@ -12160,6 +12161,7 @@ async function main(): Promise<void> {
   initFoundVoices();
   initVoiceSamples();
   initMontageBed();
+  initHelp(() => currentMode);
   initVoiceStudio();
   initSubtitles();
   initVideo();

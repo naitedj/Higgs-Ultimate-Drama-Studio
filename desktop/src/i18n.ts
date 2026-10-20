@@ -674,6 +674,8 @@ export const RU: Record<string, string> = {
   "long pauses": "длинных пауз",
   "No pauses that long": "Таких длинных пауз нет",
   "Pauses shortened": "Паузы сокращены",
+  "❓ Help": "❓ Справка",
+  "What every tab and button is for (F1)": "Для чего каждая вкладка и кнопка и как ими пользоваться (F1)",
   "Already recording — stop it first": "Запись уже идёт — сначала остановите её",
   "Complete in": "Готово за",
   "Elapsed": "Прошло",
