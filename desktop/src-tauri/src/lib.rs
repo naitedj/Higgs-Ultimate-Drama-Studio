@@ -3828,6 +3828,45 @@ fn write_speaker_metadata(
     }))
 }
 
+/// Папки голосов с записью (`reference.wav`): чтобы найти голоса, выпавшие из списка
+/// галереи. Ничего не меняет: только читает manifest.json и transcript.txt.
+#[tauri::command]
+fn scan_speaker_folders(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let root = speaker_store_root(&app)?;
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+        let dir = entry.path();
+        let reference = dir.join("reference.wav");
+        if !dir.is_dir() || !reference.is_file() {
+            continue;
+        }
+        let manifest: serde_json::Value = std::fs::read_to_string(dir.join("manifest.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let transcript = std::fs::read_to_string(dir.join("transcript.txt")).unwrap_or_default();
+        let drama_voice = dir.join("drama3.voice.gguf");
+        let meta = std::fs::metadata(&reference).ok();
+        let modified = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        found.push(serde_json::json!({
+            "dir": dir.to_string_lossy(),
+            "folder": entry.file_name().to_string_lossy(),
+            "referencePath": reference.to_string_lossy(),
+            "referenceBytes": meta.map(|m| m.len()).unwrap_or(0),
+            "modified": modified,
+            "transcript": transcript,
+            "dramaVoicePath": if drama_voice.is_file() { drama_voice.to_string_lossy().into_owned() } else { String::new() },
+            "manifest": manifest,
+        }));
+    }
+    Ok(found)
+}
+
 #[tauri::command]
 fn export_speaker_zip(
     app: AppHandle,
@@ -5074,6 +5113,7 @@ pub fn run() {
             ffmpeg_detect,
             ffmpeg_mux,
             ffmpeg_m4b,
+            scan_speaker_folders,
             project_prepare_dir,
             read_file_base64,
             project_cleanup_audio,

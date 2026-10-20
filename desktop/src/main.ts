@@ -2580,6 +2580,153 @@ function saveSpeakerPersonas(): void {
   }
 }
 
+// ─── Find voices in folders: recordings in speakers/* that the gallery list lost ───
+
+type FoundVoiceFolder = {
+  dir: string;
+  folder: string;
+  referencePath: string;
+  referenceBytes: number;
+  modified: number;
+  transcript: string;
+  dramaVoicePath: string;
+  manifest: Record<string, any> | null;
+};
+
+let foundVoiceFolders: FoundVoiceFolder[] = [];
+const foundVoicePlayer = new Audio();
+let foundVoicePlaying = -1;
+
+function samePath(a: string, b: string): boolean {
+  return a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase();
+}
+
+async function findVoicesInFolders(): Promise<void> {
+  let all: FoundVoiceFolder[];
+  try {
+    all = await invoke<FoundVoiceFolder[]>("scan_speaker_folders");
+  } catch (e) {
+    showToast(`${t("Could not look through the folders")}: ${e}`, "error");
+    return;
+  }
+  const used = speakerPersonas.flatMap((p) => [p.refPath, ...(p.extraRefs || []).map((r) => r.path)]).filter(Boolean);
+  // The same recording copied into several folders is shown once.
+  const seen = new Set<string>();
+  foundVoiceFolders = all
+    .filter((f) => !used.some((path) => samePath(path, f.referencePath)))
+    .sort((a, b) => b.modified - a.modified)
+    .filter((f) => {
+      const key = `${f.referenceBytes}:${f.transcript.trim()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  renderFoundVoices();
+  el("#found-voices-modal").classList.remove("hidden");
+}
+
+function renderFoundVoices(): void {
+  const list = el<HTMLElement>("#found-voices-list");
+  el("#found-voices-count").textContent = foundVoiceFolders.length > 0
+    ? `${t("Recordings not in the gallery")}: ${foundVoiceFolders.length}`
+    : t("All recordings in the folders are in the gallery.");
+  list.innerHTML = "";
+  foundVoiceFolders.forEach((found, index) => {
+    const row = document.createElement("div");
+    row.className = "found-voice-row";
+    row.dataset.index = String(index);
+    const date = found.modified ? new Date(found.modified).toLocaleString() : "";
+    row.innerHTML = `
+      <div class="found-voice-head">
+        <button class="ref-play" data-action="play" type="button">${foundVoicePlaying === index ? "⏸" : "▶"}</button>
+        <input class="text-input" data-field="name" type="text" placeholder="${escapeHtml(t("Name"))}" />
+        <span class="found-voice-meta"></span>
+        <button class="compact-button primary" data-action="restore" type="button">${escapeHtml(t("Restore"))}</button>
+      </div>
+      <textarea class="text-area" data-field="text" rows="2" placeholder="${escapeHtml(t("The exact words of this recording…"))}"></textarea>
+    `;
+    const manifestName = String(found.manifest?.name || "").trim();
+    row.querySelector<HTMLInputElement>('[data-field="name"]')!.value = manifestName || found.folder.replace(/_persona_.*$/, "");
+    row.querySelector<HTMLTextAreaElement>('[data-field="text"]')!.value = found.transcript;
+    row.querySelector<HTMLElement>(".found-voice-meta")!.textContent =
+      `${t("folder")} ${found.folder}${date ? ` · ${date}` : ""}${found.dramaVoicePath ? ` · ${t("has a Drama 3 voice")}` : ""}`;
+    list.appendChild(row);
+  });
+}
+
+function restoreFoundVoice(index: number): void {
+  const found = foundVoiceFolders[index];
+  const row = el<HTMLElement>("#found-voices-list").querySelector<HTMLElement>(`.found-voice-row[data-index="${index}"]`);
+  if (!found || !row) return;
+  const name = row.querySelector<HTMLInputElement>('[data-field="name"]')!.value.trim() || t("Voice");
+  const text = row.querySelector<HTMLTextAreaElement>('[data-field="text"]')!.value.trim();
+  const manifest = found.manifest || {};
+  const now = Date.now();
+  const manifestId = String(manifest.id || "");
+  const id = manifestId && !speakerPersonas.some((p) => p.id === manifestId) ? manifestId : nextId("persona");
+  const persona: SpeakerPersona = {
+    id,
+    name,
+    refPath: found.referencePath,
+    refName: "reference.wav",
+    refText: text,
+    notes: String(manifest.notes || ""),
+    photoPath: String(manifest.photoPath || manifest.photo_path || ""),
+    cachePath: "",
+    normalize: Boolean(manifest.normalize),
+    createdAt: Number(manifest.createdAt || manifest.created_at) || now,
+    updatedAt: now,
+  };
+  // The Drama 3 voice stays only if it was made from this very text; otherwise it is marked "remake".
+  if (found.dramaVoicePath) {
+    persona.dramaVoicePath = found.dramaVoicePath;
+    persona.dramaVoiceName = uniqueDramaVoiceName(String(manifest.dramaVoiceName || manifest.drama_voice_name || name));
+    persona.dramaVoiceText = String(manifest.dramaVoiceText || manifest.drama_voice_text || "");
+  }
+  speakerPersonas.push(persona);
+  saveSpeakerPersonas();
+  foundVoiceFolders.splice(index, 1);
+  if (foundVoicePlaying === index) foundVoicePlayer.pause();
+  foundVoicePlaying = -1;
+  renderFoundVoices();
+  showToast(`${t("Voice restored")}: ${name}`);
+}
+
+function initFoundVoices(): void {
+  el("#speaker-find-btn").addEventListener("click", () => void findVoicesInFolders());
+  const close = () => {
+    foundVoicePlayer.pause();
+    foundVoicePlaying = -1;
+    el("#found-voices-modal").classList.add("hidden");
+  };
+  el("#found-voices-close").addEventListener("click", close);
+  el("#found-voices-done").addEventListener("click", close);
+  foundVoicePlayer.addEventListener("ended", () => {
+    foundVoicePlaying = -1;
+    renderFoundVoices();
+  });
+  el("#found-voices-list").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!button) return;
+    const index = Number(button.closest<HTMLElement>(".found-voice-row")?.dataset.index);
+    if (button.dataset.action === "restore") {
+      restoreFoundVoice(index);
+    } else if (button.dataset.action === "play") {
+      if (foundVoicePlaying === index) {
+        foundVoicePlayer.pause();
+        foundVoicePlaying = -1;
+      } else {
+        foundVoicePlayer.src = convertFileSrc(foundVoiceFolders[index].referencePath);
+        void foundVoicePlayer.play().catch(() => showToast(t("Could not play the recording"), "error"));
+        foundVoicePlaying = index;
+      }
+      for (const b of el("#found-voices-list").querySelectorAll<HTMLButtonElement>('[data-action="play"]')) {
+        b.textContent = Number(b.closest<HTMLElement>(".found-voice-row")?.dataset.index) === foundVoicePlaying ? "⏸" : "▶";
+      }
+    }
+  });
+}
+
 async function syncApiSpeakers(message = "Speaker identities synced"): Promise<void> {
   try {
     for (const persona of speakerPersonas) {
@@ -11506,6 +11653,7 @@ async function main(): Promise<void> {
   initVoiceMixAndLock();
   initChapter();
   initBook();
+  initFoundVoices();
   initVoiceStudio();
   initSubtitles();
   initVideo();

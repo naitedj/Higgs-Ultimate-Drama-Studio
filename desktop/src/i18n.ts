@@ -674,6 +674,20 @@ export const RU: Record<string, string> = {
   "long pauses": "длинных пауз",
   "No pauses that long": "Таких длинных пауз нет",
   "Pauses shortened": "Паузы сокращены",
+  "Look through the speakers folders for recordings that are not in the gallery list, listen to them and put them back":
+    "Просмотреть папки голосов: найти записи, которых нет в списке галереи, прослушать и вернуть их",
+  "🔎 Find voices in folders": "🔎 Найти голоса в папках",
+  "Voices in the folders": "Голоса в папках",
+  "Listen to each recording, give it a name and check that the text matches the recording word for word (old folders may have a wrong text), then press Restore. Nothing is deleted.":
+    "Прослушайте каждую запись, дайте имя и проверьте, что текст совпадает с записью слово в слово (в старых папках текст может быть чужим), затем нажмите «Восстановить». Ничего не удаляется.",
+  "Could not look through the folders": "Не удалось просмотреть папки",
+  "Recordings not in the gallery": "Записей не в галерее",
+  "All recordings in the folders are in the gallery.": "Все записи из папок уже есть в галерее.",
+  "Restore": "Восстановить",
+  "folder": "папка",
+  "has a Drama 3 voice": "есть голос Drama 3",
+  "Voice restored": "Голос восстановлен",
+  "Could not play the recording": "Не удалось воспроизвести запись",
   "📚 M4B of the book": "📚 M4B книги",
   "All joined chapters in one M4B file with a chapter list (needs ffmpeg). Loudness, tags and quality as in the audiobook export":
     "Все склеенные главы одним файлом M4B с оглавлением (нужен ffmpeg). Громкость, теги и качество — как в экспорте аудиокниги",

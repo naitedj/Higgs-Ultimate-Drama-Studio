@@ -303,6 +303,7 @@
                   <button id="speaker-add-btn" class="compact-button primary" type="button">+ Speaker</button>
                   <button id="speaker-mix-btn" class="compact-button" type="button" title="A new voice made of the recordings of two voices">Mix voices</button>
                   <button id="speaker-voicepack-btn" class="compact-button" type="button" title="Download the standard Nerual Dreming voice pack and add all voices to the gallery">Standard voices</button>
+                  <button id="speaker-find-btn" class="compact-button" type="button" title="Look through the speakers folders for recordings that are not in the gallery list, listen to them and put them back">🔎 Find voices in folders</button>
                   <button id="speaker-import-btn" class="compact-button" type="button">Import</button>
                   <button id="speaker-export-btn" class="compact-button" type="button">Export</button>
                   <button id="speaker-delete-btn" class="compact-button danger" type="button">Delete</button>
@@ -1712,6 +1713,23 @@ Third phrase."></textarea>
             <button id="remarks-editor-add" class="compact-button" type="button">+ Button</button>
             <button id="remarks-editor-reset" class="compact-button" type="button">Reset to defaults</button>
             <button id="remarks-editor-done" class="compact-button primary" type="button">Done</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="found-voices-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="found-voices-title">
+        <section class="modal-panel found-voices-panel">
+          <div class="modal-head">
+            <div>
+              <h3 id="found-voices-title">Voices in the folders</h3>
+              <span id="found-voices-count" class="api-status-text"></span>
+            </div>
+            <button id="found-voices-close" class="popover-close" type="button" aria-label="Close">✕</button>
+          </div>
+          <p class="input-hint found-voices-hint">Listen to each recording, give it a name and check that the text matches the recording word for word (old folders may have a wrong text), then press Restore. Nothing is deleted.</p>
+          <div id="found-voices-list" class="found-voices-list"></div>
+          <div class="modal-actions">
+            <button id="found-voices-done" class="compact-button primary" type="button">Done</button>
           </div>
         </section>
       </div>
