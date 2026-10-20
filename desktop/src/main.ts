@@ -8154,15 +8154,16 @@ function initAudioPlayer(): void {
 // Generation history
 // ═══════════════════════════════════════════════════════════════════════════
 
-function addHistory(mode: Mode, label: string, result: GenerationResult): void {
+function addHistory(mode: Mode, label: string, result: GenerationResult & { seed?: number }): void {
   const entry: HistoryEntry = {
-    id: `gen_${Date.now()}`,
+    id: nextId("gen"),
     mode,
     label,
     timestamp: Date.now(),
     wavBase64: result.wavBase64,
     sampleRate: result.sampleRate,
     channels: result.channels,
+    seed: typeof result.seed === "number" ? result.seed : undefined,
   };
   history.unshift(entry);
   if (history.length > 30) history.length = 30; // keep last 30 (fragments for Montage)
@@ -8170,6 +8171,7 @@ function addHistory(mode: Mode, label: string, result: GenerationResult): void {
 }
 
 function renderHistory(): void {
+  scheduleProjectSave();
   const list = el<HTMLElement>("#recent-list");
   if (history.length === 0) {
     list.innerHTML = `<p class="empty-state">${t("No generations yet")}</p>`;
@@ -8181,11 +8183,20 @@ function renderHistory(): void {
   for (const entry of history) {
     const item = document.createElement("div");
     item.className = "recent-item";
-    const time = new Date(entry.timestamp).toLocaleTimeString();
-    item.innerHTML = `<span class="recent-mode">${entry.mode}</span><span class="recent-label">${escapeHtml(entry.label)}</span><span class="recent-time">${time}</span><button class="recent-montage compact-button" data-id="${entry.id}" type="button" title="${escapeHtml(t("Add to the Montage tab"))}">${escapeHtml(t("+ To montage"))}</button><button class="recent-delete" data-id="${entry.id}" title="Delete">✕</button>`;
+    const day = new Date(entry.timestamp);
+    const time = day.toDateString() === new Date().toDateString() ? day.toLocaleTimeString() : day.toLocaleString();
+    const seed = entry.seed !== undefined ? `<button class="recent-seed link-button" data-seed="${entry.seed}" type="button" title="${escapeHtml(t("Put this seed into the Drama 3 settings to make the take again"))}">seed ${entry.seed}</button>` : "";
+    item.innerHTML = `<span class="recent-mode">${entry.mode}</span><span class="recent-label">${escapeHtml(entry.label)}</span>${seed}<span class="recent-time">${time}</span><button class="recent-montage compact-button" data-id="${entry.id}" type="button" title="${escapeHtml(t("Add to the Montage tab"))}">${escapeHtml(t("+ To montage"))}</button><button class="recent-delete" data-id="${entry.id}" title="Delete">✕</button>`;
     item.querySelector<HTMLButtonElement>(".recent-montage")!.addEventListener("click", (e) => {
       e.stopPropagation();
       addMontageClip(entry.label, historyEntryResult(entry), "history");
+    });
+    item.querySelector<HTMLButtonElement>(".recent-seed")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const seed = el<HTMLInputElement>("#drama-seed");
+      seed.value = String(entry.seed);
+      seed.dispatchEvent(new Event("input", { bubbles: true }));
+      showToast(`${t("Seed set")}: ${entry.seed}`);
     });
 
     // Click on the item (not the delete button) plays it
@@ -10665,6 +10676,8 @@ type ProjectFile = {
     normalize: boolean;
     speed: number;
   };
+  /** The History tab: takes with their seeds. */
+  history?: Array<Omit<HistoryEntry, "wavBase64"> & { take: SavedTake }>;
   /** All chapters of the book; `chapter` above is the active one (kept for older versions). */
   book?: { chapters: BookChapter[]; active: number };
   subtitles?: {
@@ -10768,6 +10781,12 @@ async function saveProject(): Promise<void> {
     }
     const montageJoined = montageResult ? (await takeOf("montage_joined.wav", montageResult)).file : null;
 
+    const savedHistory: NonNullable<ProjectFile["history"]> = [];
+    for (const entry of history) {
+      const { wavBase64, ...rest } = entry;
+      savedHistory.push({ ...rest, take: await takeOf(`history_${entry.id}.wav`, { wavBase64, sampleRate: entry.sampleRate, channels: entry.channels, sampleCount: 0, seed: entry.seed }) });
+    }
+
     const cues: NonNullable<ProjectFile["subtitles"]>["cues"] = [];
     for (const cue of subsCues) {
       const { take, ...rest } = cue;
@@ -10790,6 +10809,7 @@ async function saveProject(): Promise<void> {
       },
       subtitles: { settings: readSubsSettings(), characters: subsCharacters, cues },
       book: { chapters: bookChapters, active: bookActive },
+      history: savedHistory,
     };
     await invoke("save_text_file", { path: `${currentProject.dir}\\project.json`, content: JSON.stringify(file, null, 1) });
     await invoke("project_cleanup_audio", { dir: currentProject.dir, keep });
@@ -10890,6 +10910,22 @@ async function openProject(dir: string, quiet = false): Promise<boolean> {
     renderBook();
     renderChapterPieces();
 
+    // History (projects made before it was saved keep the present list).
+    if (file.history) {
+      history = [];
+      for (const saved of file.history) {
+        try {
+          const { take, ...rest } = saved;
+          const audio = await readProjectTake(take, {});
+          projectWritten.set(take.file, audio.wavBase64);
+          history.push({ ...rest, wavBase64: audio.wavBase64 });
+        } catch {
+          missing += 1;
+        }
+      }
+      renderHistory();
+    }
+
     // Scene
     dramaScene = file.scene.scene;
     saveDramaScene(dramaScene);
@@ -10979,6 +11015,8 @@ async function startProject(dir: string, name: string): Promise<void> {
 
 /** Clears the Chapter, the scene's script and lines, and the Montage (characters stay). */
 function clearWorkForNewProject(): void {
+  history = [];
+  renderHistory();
   bookChapters = [];
   bookActive = 0;
   chapterPieces = [];

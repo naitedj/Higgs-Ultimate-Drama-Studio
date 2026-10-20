@@ -201,6 +201,8 @@ export type HistoryEntry = {
   wavBase64: string;
   sampleRate: number;
   channels: number;
+  /** Drama 3 seed of the take, to make it again. */
+  seed?: number;
 };
 
 export type MultiSpeaker = {

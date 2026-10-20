@@ -674,6 +674,8 @@ export const RU: Record<string, string> = {
   "long pauses": "длинных пауз",
   "No pauses that long": "Таких длинных пауз нет",
   "Pauses shortened": "Паузы сокращены",
+  "Put this seed into the Drama 3 settings to make the take again": "Поставить этот seed в настройки Drama 3, чтобы повторить дубль",
+  "Seed set": "Seed поставлен",
   "Hear this voice: one phrase": "Послушать голос: одна фраза",
   "Wait until the present voicing ends": "Дождитесь конца текущей озвучки",
   "Could not make the sample": "Не удалось озвучить пример",
