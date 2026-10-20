@@ -64,7 +64,7 @@ import type { WavePanel } from "./wavePanel";
 import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
 import type { SubtitleCue } from "./subtitles";
 import { applyDictionary, DICTIONARY_STORAGE_KEY, loadDictionary, saveDictionary } from "./dictionary";
-import { AUDIOBOOK_TARGET_LUFS, audiobookFileName, id3Tag, loadAudiobookExport, masterAudiobook, saveAudiobookExport } from "./audiobook";
+import { AUDIOBOOK_TARGET_LUFS, audiobookFileName, id3Tag, loadAudiobookExport, m4bMetadata, masterAudiobook, saveAudiobookExport } from "./audiobook";
 import type { AudiobookExport, AudiobookFormat } from "./audiobook";
 import type { DictionaryEntry } from "./dictionary";
 import {
@@ -8996,7 +8996,7 @@ function renderBook(): void {
   const inProject = Boolean(currentProject);
   const busy = chapterRunning || bookRunning;
   select.disabled = !inProject || busy;
-  for (const id of ["#book-add", "#book-rename", "#book-split"]) el<HTMLButtonElement>(id).disabled = !inProject || busy;
+  for (const id of ["#book-add", "#book-rename", "#book-split", "#book-m4b"]) el<HTMLButtonElement>(id).disabled = !inProject || busy;
   el<HTMLButtonElement>("#book-remove").disabled = !inProject || busy || bookChapters.length < 2;
   el<HTMLButtonElement>("#book-run").disabled = !inProject || (chapterRunning && !bookRunning);
   el<HTMLButtonElement>("#book-run").textContent = bookRunning ? t("⏹ Stop the book") : t("▶ Voice the book");
@@ -9151,7 +9151,72 @@ async function runBook(): Promise<void> {
   else showToast(`${t("Book voiced")}: ${voiced}`);
 }
 
+/** The whole book as one M4B with a chapter list: every joined chapter mastered, then ffmpeg. */
+async function exportBookM4b(outPath?: string): Promise<void> {
+  if (!currentProject) return;
+  await saveProjectNow();
+  const ready = bookChapters.filter((c) => c.joined);
+  const missing = bookChapters.filter((c) => !c.joined && c.text.trim()).map((c) => c.title);
+  if (ready.length === 0) {
+    showToast(t("No joined chapters yet: voice the book first"), "warning");
+    return;
+  }
+  if (missing.length > 0) {
+    const answer = await askChoice(t("Audiobook M4B"), `${t("Not joined yet")}: ${missing.join(", ")}. ${t("Make the M4B from the joined chapters only?")}`, [
+      { value: "cancel", label: t("Cancel") },
+      { value: "go", label: t("Make M4B"), primary: true },
+    ]);
+    if (answer !== "go") return;
+  }
+  if (!videoFfmpeg) await detectFfmpeg();
+  if (!videoFfmpeg) {
+    showToast(t("ffmpeg not found: install it or choose ffmpeg.exe (Video tab)"), "error");
+    return;
+  }
+  const settings = loadAudiobookExport();
+  const title = settings.book || settings.title || currentProject.name;
+  const out = outPath ?? await save({
+    defaultPath: `${(title || "book").replace(/[\\/:*?"<>|]+/g, "_")}.m4b`,
+    filters: [{ name: "M4B audiobook", extensions: ["m4b"] }],
+  });
+  if (!out) return;
+  const hint = el("#book-hint");
+  const button = el<HTMLButtonElement>("#book-m4b");
+  button.disabled = true;
+  try {
+    const chapters: Array<{ title: string; startMs: number; endMs: number }> = [];
+    const list: string[] = [];
+    let at = 0;
+    for (let i = 0; i < ready.length; i++) {
+      hint.textContent = `${t("Preparing chapter")} ${i + 1}/${ready.length}…`;
+      await nextFrame();
+      let wavBase64 = await invoke<string>("read_file_base64", { path: projectAudioPath(ready[i].joined!) });
+      if (settings.standard) wavBase64 = await invoke<string>("normalize_wav", { wavBase64, targetLufs: AUDIOBOOK_TARGET_LUFS });
+      const mastered = masterAudiobook(parseWavPcm(wavBase64), settings);
+      const ms = (frameCount(mastered) / mastered.sampleRate) * 1000;
+      const path = await invoke<string>("drama_temp_path", { name: `m4b_chapter_${i + 1}.wav` });
+      await invoke("save_binary_file", { path, base64Data: pcmToResult(mastered).wavBase64 });
+      list.push(`file '${path.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`);
+      chapters.push({ title: ready[i].title, startMs: at, endMs: at + ms });
+      at += ms;
+    }
+    const listPath = await invoke<string>("drama_temp_path", { name: "m4b_list.txt" });
+    const metaPath = await invoke<string>("drama_temp_path", { name: "m4b_metadata.txt" });
+    await invoke("save_text_file", { path: listPath, content: `${list.join("\n")}\n` });
+    await invoke("save_text_file", { path: metaPath, content: m4bMetadata({ title, author: settings.author }, chapters) });
+    hint.textContent = `${t("Encoding M4B")}…`;
+    await invoke("ffmpeg_m4b", { ffmpeg: videoFfmpeg, list: listPath, metadata: metaPath, out, bitrate: settings.format === "mp3-128" ? 128 : 64 });
+    showToast(`${t("Exported")}: ${out.split(/[/\\]/).pop()} · ${t("chapters")}: ${chapters.length} · ${formatTime(at / 1000)}`);
+  } catch (e) {
+    showToast(`${t("Could not make the M4B")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+    renderBook();
+  }
+}
+
 function initBook(): void {
+  el("#book-m4b").addEventListener("click", () => void exportBookM4b());
   el<HTMLSelectElement>("#book-chapter").addEventListener("change", (event) => {
     void activateBookChapter(Number((event.target as HTMLSelectElement).value));
   });
@@ -11452,6 +11517,7 @@ async function main(): Promise<void> {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
       addMontageClip,
       lastResult: () => lastResult,
+      exportBookM4b,
       confirmDramaVram: () => confirmDramaVram(dramaPathsFromInputs().modelPath, dramaPathsFromInputs().device),
       montageResult: () => montageResult,
       applyGalleryReference,

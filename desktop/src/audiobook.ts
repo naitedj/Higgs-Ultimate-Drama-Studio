@@ -132,3 +132,23 @@ export function audiobookFileName(settings: AudiobookExport, fallback: string): 
   const name = track ? `${track.padStart(2, "0")}. ${title}` : title;
   return name.replace(/[<>:"/\\|?*]+/g, "_").slice(0, 120);
 }
+
+/** A value in an FFMETADATA file: = ; # \ and line breaks escaped. */
+function ffmetaValue(value: string): string {
+  return value.replace(/[\\=;#\n]/g, (c) => (c === "\n" ? "\\\n" : `\\${c}`));
+}
+
+/** FFMETADATA with the book tags and one chapter per entry (times in milliseconds). */
+export function m4bMetadata(
+  tags: { title: string; author: string },
+  chapters: Array<{ title: string; startMs: number; endMs: number }>,
+): string {
+  const lines = [";FFMETADATA1"];
+  if (tags.title) lines.push(`title=${ffmetaValue(tags.title)}`, `album=${ffmetaValue(tags.title)}`);
+  if (tags.author) lines.push(`artist=${ffmetaValue(tags.author)}`, `album_artist=${ffmetaValue(tags.author)}`);
+  lines.push("genre=Audiobook");
+  for (const chapter of chapters) {
+    lines.push("[CHAPTER]", "TIMEBASE=1/1000", `START=${Math.round(chapter.startMs)}`, `END=${Math.round(chapter.endMs)}`, `title=${ffmetaValue(chapter.title)}`);
+  }
+  return `${lines.join("\n")}\n`;
+}

@@ -4767,6 +4767,34 @@ async fn ffmpeg_mux(ffmpeg: String, video: String, audio: String, out: String, o
     .map_err(|e| format!("task join error: {e}"))?
 }
 
+/// Аудиокнига M4B: главы (WAV) склеиваются по списку concat, оглавление и теги —
+/// из файла FFMETADATA, звук AAC.
+#[tauri::command]
+async fn ffmpeg_m4b(ffmpeg: String, list: String, metadata: String, out: String, bitrate: u32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut command = quiet_command(&ffmpeg);
+        command
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
+            .arg(&list)
+            .arg("-i")
+            .arg(&metadata)
+            .args(["-map", "0:a", "-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a"])
+            .arg(format!("{}k", bitrate.clamp(32, 256)))
+            .args(["-movflags", "+faststart", "-f", "mp4"])
+            .arg(&out);
+        let output = command.output().map_err(|e| format!("ffmpeg не запустился: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+            Err(tail.into_iter().rev().collect::<Vec<_>>().join(" "))
+        }
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 /// Студия голоса: высота тона (полутоны) и форманты («возраст») записи вокодером WORLD.
 /// Принимает и возвращает WAV в base64; результат моно 16 бит.
 #[tauri::command]
@@ -5045,6 +5073,7 @@ pub fn run() {
             voice_morph_wav,
             ffmpeg_detect,
             ffmpeg_mux,
+            ffmpeg_m4b,
             project_prepare_dir,
             read_file_base64,
             project_cleanup_audio,
