@@ -212,6 +212,9 @@
   написать заново (~40 строк: fetch `/json`, WebSocket, `Runtime.evaluate`, `Page.captureScreenshot`).
   Окна выбора файлов подменить нельзя (`__TAURI_INTERNALS__.invoke` read-only) → `__dramaStudioTest`.
 - Перед запуском: закрыть `higgs-audio-studio` из `drama3` и (по разрешению) из `Claude\test`, освободить порт 1420.
+  **Закрывать только по PID/пути** (у установленной копии то же имя exe — `taskkill /IM` закрывает и её).
+- Медленная озвучка = чаще всего занята видеопамять другой программой (2026-10-20: процесс `python` держал 7,4 ГБ) →
+  Drama 3 (21,7 ГиБ) не влезает, слои уходят на CPU. Проверка: счётчик `\GPU Process Memory(*)\Dedicated Usage`.
 - Parakeet: `F:\Claude\test\Drama Studio\models\parakeet\tdt-0.6b-v3-int8` (`localStorage higgsAudio.whisperModel`;
   `onnxruntime.dll` скопирован в `target/debug`).
 - Примеры-проверки: `src-tauri/examples/drama_smoke.rs`, `drama_scene_smoke.rs`, `voice_morph_smoke.rs`.
