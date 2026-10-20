@@ -942,6 +942,7 @@
               <button id="chapter-run" class="primary-btn" type="button">▶ Voice the chapter</button>
               <button id="chapter-stop" class="cancel-btn hidden" type="button">⏹ Stop</button>
               <button id="chapter-redo-bad" class="compact-button hidden" type="button">↻ Redo the marked pieces</button>
+              <button id="chapter-insert-sound" class="compact-button" type="button" title="Your own sound (music, effect, a recorded title) at the start of the chapter; ♪+ at a piece puts it after that piece">♪ Sound at the start</button>
             </div>
             <div class="progress-track chapter-progress hidden" id="chapter-progress"><div class="progress-bar" id="chapter-progress-bar"></div></div>
             <div id="chapter-pieces" class="chapter-pieces"></div>
@@ -960,6 +961,7 @@
               <audio id="chapter-audio" controls preload="auto"></audio>
               <div class="montage-output-actions">
                 <button id="chapter-edit" class="compact-button" type="button">✂ Edit</button>
+                <button id="chapter-import" class="compact-button" type="button" title="Save WAV, edit it in another program (Audacity…), then put the edited file back here">⤒ Put back edited</button>
                 <button id="chapter-save-wav" class="compact-button primary" type="button">Save WAV</button>
                 <button id="chapter-save-mp3" class="compact-button" type="button">Save MP3</button>
                 <button id="chapter-to-montage" class="compact-button" type="button">+ To montage</button>
@@ -1175,6 +1177,7 @@
               <audio id="montage-audio" controls preload="auto"></audio>
               <div class="montage-output-actions">
                 <button id="montage-edit" class="compact-button" type="button">✂ Edit</button>
+                <button id="montage-import" class="compact-button" type="button" title="Save WAV, edit it in another program (Audacity…), then put the edited file back here">⤒ Put back edited</button>
                 <button id="montage-save-wav" class="compact-button primary" type="button">Save WAV</button>
                 <button id="montage-save-mp3" class="compact-button" type="button">Save MP3</button>
                 <button id="montage-to-history" class="compact-button" type="button">To history</button>

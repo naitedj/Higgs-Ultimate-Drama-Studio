@@ -8324,6 +8324,8 @@ function renderMontage(): void {
       </label>
       <span class="montage-actions">
         <button class="icon-button" data-action="edit" type="button" title="${escapeHtml(t("Cut pauses and pieces out of this fragment"))}">✂</button>
+        <button class="icon-button" data-action="export" type="button" title="${escapeHtml(t("Save as WAV to edit it in another program"))}">⤓</button>
+        <button class="icon-button" data-action="import" type="button" title="${escapeHtml(t("Put back a file edited in another program instead of this fragment"))}">⤒</button>
         <button class="icon-button" data-action="up" type="button" title="${escapeHtml(t("Move up"))}" ${index === 0 ? "disabled" : ""}>↑</button>
         <button class="icon-button" data-action="down" type="button" title="${escapeHtml(t("Move down"))}" ${index === montageClips.length - 1 ? "disabled" : ""}>↓</button>
         <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
@@ -8552,6 +8554,10 @@ type ChapterPieceState = ChapterPiece & {
   staleWhy?: "text" | "voice";
   /** The voice and text (with the manner) the take was made with, to notice a change. */
   voicedWith?: string;
+  /** The take was replaced by a file edited elsewhere: it is not voiced again unless asked. */
+  edited?: boolean;
+  /** The user's own sound (music, effect) put into the chapter: never voiced. */
+  sound?: boolean;
 };
 type ChapterSettings = {
   text: string;
@@ -8726,7 +8732,7 @@ function chapterPieceRequest(piece: ChapterPieceState): { text: string; voice: s
 function markChangedChapterPieces(): boolean {
   let changed = false;
   for (const piece of chapterPieces) {
-    if (!piece.result || piece.stale || piece.voicedWith === undefined) continue;
+    if (!piece.result || piece.stale || piece.voicedWith === undefined || piece.sound || piece.edited) continue;
     if (chapterPieceSignature(piece) !== piece.voicedWith) {
       piece.stale = true;
       piece.staleWhy = "voice";
@@ -8756,26 +8762,31 @@ function renderChapterPieces(): void {
   list.innerHTML = "";
   chapterPieces.forEach((piece, index) => {
     const row = document.createElement("div");
-    row.className = `chapter-piece ${piece.status}${piece.stale ? " stale" : ""}`;
+    row.className = `chapter-piece ${piece.status}${piece.stale ? " stale" : ""}${piece.sound ? " sound" : ""}`;
     row.dataset.id = piece.id;
     const speaker = chapterPieceSpeaker(piece);
     const meta: string[] = [];
     if (piece.result) meta.push(`${piece.result.seconds.toFixed(1)} ${t("s")}`);
     if (piece.coverage !== null) meta.push(`${t("words")} ${Math.round(piece.coverage * 100)}%`);
     if (piece.attempts > 1) meta.push(`${t("takes")}: ${piece.attempts}`);
+    if (piece.edited && !piece.sound) meta.push(`✎ ${t("edited")}`);
+    const voiced = !piece.sound;
     row.innerHTML = `
       <div class="chapter-piece-head">
         <span class="chapter-piece-index">${index + 1}</span>
         <span class="chapter-piece-status">${escapeHtml(t(CHAPTER_STATUS_LABEL[piece.status]))}</span>
-        ${chapterCharacters.length > 0
+        ${piece.sound ? `<strong class="chapter-piece-speaker">♪ ${escapeHtml(t("Sound"))}</strong>` : chapterCharacters.length > 0
           ? `<select class="select-input chapter-piece-speaker-select" data-field="speaker" style="--speaker-color:${piece.character >= 0 ? sceneColor(piece.character) : "var(--text-secondary)"}">${chapterSpeakerOptions(piece.character)}</select>`
           : speaker ? `<strong class="chapter-piece-speaker" style="color:${sceneColor(piece.character)}">${escapeHtml(speaker)}</strong>` : ""}
         <span class="chapter-piece-meta">${escapeHtml(meta.join(" · "))}</span>
         <span class="chapter-piece-actions">
           <button class="ref-play" data-action="play" type="button" ${piece.result ? "" : "disabled"} aria-label="${escapeHtml(t("Play"))}">${chapterPlayingId === piece.id ? "⏸" : "▶"}</button>
           <button class="compact-button" data-action="edit" type="button" ${piece.result ? "" : "disabled"} title="${escapeHtml(t("Cut pauses and pieces out of this line"))}">✂</button>
-          <button class="compact-button" data-action="variants" type="button" ${chapterRunning ? "disabled" : ""} title="${escapeHtml(t("Three takes with different seeds: listen and keep the best"))}">3×</button>
-          <button class="compact-button" data-action="redo" type="button" ${chapterRunning ? "disabled" : ""}>${escapeHtml(t("↻ Redo"))}</button>
+          <button class="compact-button" data-action="export" type="button" ${piece.result ? "" : "disabled"} title="${escapeHtml(t("Save as WAV to edit it in another program"))}">⤓</button>
+          <button class="compact-button" data-action="import" type="button" ${chapterRunning ? "disabled" : ""} title="${escapeHtml(t("Put back a file edited in another program instead of this take"))}">⤒</button>
+          <button class="compact-button" data-action="add-sound" type="button" ${chapterRunning ? "disabled" : ""} title="${escapeHtml(t("Insert your own sound (music, effect) after this piece"))}">♪+</button>
+          ${voiced ? `<button class="compact-button" data-action="variants" type="button" ${chapterRunning ? "disabled" : ""} title="${escapeHtml(t("Three takes with different seeds: listen and keep the best"))}">3×</button>
+          <button class="compact-button" data-action="redo" type="button" ${chapterRunning ? "disabled" : ""}>${escapeHtml(t("↻ Redo"))}</button>` : `<button class="compact-button danger" data-action="remove-sound" type="button" ${chapterRunning ? "disabled" : ""} title="${escapeHtml(t("Remove this sound from the chapter"))}">✕</button>`}
         </span>
       </div>
       <textarea class="text-area chapter-piece-text" data-field="text" rows="2" spellcheck="false"></textarea>
@@ -8926,6 +8937,7 @@ async function voiceChapterPiece(piece: ChapterPieceState): Promise<void> {
   piece.stale = false;
   piece.staleWhy = undefined;
   piece.voicedWith = `${voice}\n${text}`;
+  piece.edited = false;
   chapterResult = null;
   renderChapterPieces();
 }
@@ -8937,7 +8949,7 @@ async function runChapter(onlyMarked = false, auto = false): Promise<void> {
   if (chapterPieces.length === 0 && !splitChapterIntoPieces()) return;
   if (!(await ensureDramaLoaded())) return;
   markChangedChapterPieces();
-  let todo = chapterPieces.filter((p) =>
+  let todo = chapterPieces.filter((p) => !p.sound).filter((p) =>
     onlyMarked ? p.status === "bad" || p.status === "warn" || p.stale : !p.result || p.stale,
   );
   if (todo.length === 0) {
@@ -8952,7 +8964,8 @@ async function runChapter(onlyMarked = false, auto = false): Promise<void> {
       { value: "all", label: t("Voice everything again"), primary: true },
     ]);
     if (answer !== "all") return;
-    todo = [...chapterPieces];
+    // Own sounds and takes edited elsewhere stay as they are.
+    todo = chapterPieces.filter((p) => !p.sound && !p.edited);
   }
   chapterRunning = true;
   chapterStopRequested = false;
@@ -8995,6 +9008,77 @@ async function stopChapter(): Promise<void> {
   if (!chapterRunning) return;
   chapterStopRequested = true;
   await invoke("drama_cancel").catch(() => {});
+}
+
+// ─── Files edited elsewhere and own sounds ───
+
+/** A recording chosen by the user, as WAV (any format the program reads). */
+/** Dev tests only: the next file "chosen" without the dialog. */
+let testPickedAudio: string | null = null;
+
+async function pickAudioAsTake(): Promise<(DramaGenerationResult & { name: string }) | null> {
+  const picked = testPickedAudio;
+  testPickedAudio = null;
+  const file = picked ? { path: picked, name: picked.split(/[/\\]/).pop() || picked } : await pickAudioFile();
+  if (!file) return null;
+  try {
+    const audio = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: file.path });
+    const pcm = parseWavPcm(audio.wavBase64);
+    const seconds = frameCount(pcm) / pcm.sampleRate;
+    return { ...audio, sampleCount: pcm.samples.length, seed: 0, stop: "file", seconds, name: file.name };
+  } catch (e) {
+    showToast(`${t("Could not read the recording")}: ${e}`, "error");
+    return null;
+  }
+}
+
+/** "⤒": a file edited in another program replaces the piece's take. */
+async function importEditedChapterPiece(piece: ChapterPieceState): Promise<void> {
+  const take = await pickAudioAsTake();
+  if (!take) return;
+  const { name, ...result } = take;
+  piece.result = piece.result ? { ...piece.result, ...result, seed: piece.result.seed } : result;
+  piece.status = "ok";
+  piece.reason = "";
+  piece.coverage = null;
+  piece.stale = false;
+  piece.staleWhy = undefined;
+  if (!piece.sound) {
+    piece.edited = true;
+    try {
+      piece.voicedWith = chapterPieceSignature(piece);
+    } catch {
+      // The signature is only for noticing later changes.
+    }
+  }
+  chapterResult = null;
+  renderChapterPieces();
+  showToast(`${t("Put back")}: ${name}`);
+}
+
+/** "♪+": the user's own sound (music, effect, a recorded title) at `index` in the chapter. */
+async function insertChapterSound(index: number): Promise<void> {
+  const take = await pickAudioAsTake();
+  if (!take) return;
+  const { name, ...result } = take;
+  const piece: ChapterPieceState = {
+    text: name,
+    character: -1,
+    kind: "narration",
+    paragraphEnd: true,
+    id: nextId("piece"),
+    status: "ok",
+    reason: "",
+    result,
+    coverage: null,
+    attempts: 0,
+    stale: false,
+    sound: true,
+  };
+  chapterPieces.splice(Math.max(0, Math.min(chapterPieces.length, index)), 0, piece);
+  chapterResult = null;
+  renderChapterPieces();
+  showToast(`${t("Sound added")}: ${name}`);
 }
 
 /** How many takes "3×" makes. */
@@ -9149,7 +9233,7 @@ async function joinChapter(): Promise<void> {
     await nextFrame();
     const takes: GenerationResult[] = [];
     for (const piece of chapterPieces) {
-      takes.push(settings.level ? await levelSceneTake(piece.result!, true) : piece.result!);
+      takes.push(settings.level && !piece.sound ? await levelSceneTake(piece.result!, true) : piece.result!);
     }
     const pcms = takes.map((take) => parseWavPcm(take.wavBase64));
     const rate = pcms[0].sampleRate;
@@ -9227,6 +9311,10 @@ function initChapter(): void {
     // The speaker list sends "input" too: only the text field holds the text.
     if (!piece || area.dataset.field !== "text") return;
     piece.text = area.value;
+    if (piece.sound) {
+      scheduleProjectSave();
+      return;
+    }
     if (piece.result && !piece.stale) {
       piece.stale = true;
       piece.staleWhy = "text";
@@ -9256,7 +9344,17 @@ function initChapter(): void {
     if (!button) return;
     const piece = chapterPieces.find((p) => p.id === button.closest<HTMLElement>(".chapter-piece")?.dataset.id);
     if (!piece) return;
-    if (button.dataset.action === "variants") {
+    if (button.dataset.action === "export" && piece.result) {
+      void saveResultToFile(piece.result, `${t("Piece")} ${chapterPieces.indexOf(piece) + 1}`, "wav");
+    } else if (button.dataset.action === "import") {
+      void importEditedChapterPiece(piece);
+    } else if (button.dataset.action === "add-sound") {
+      void insertChapterSound(chapterPieces.indexOf(piece) + 1);
+    } else if (button.dataset.action === "remove-sound") {
+      chapterPieces.splice(chapterPieces.indexOf(piece), 1);
+      chapterResult = null;
+      renderChapterPieces();
+    } else if (button.dataset.action === "variants") {
       void chapterPieceVariants(piece);
     } else if (button.dataset.action === "redo") {
       void redoChapterPiece(piece);
@@ -9292,6 +9390,13 @@ function initChapter(): void {
   });
 
   chapterWave = makeWavePanel("#chapter-audio", showChapterResult);
+  el("#chapter-insert-sound").addEventListener("click", () => void insertChapterSound(0));
+  el("#chapter-import").addEventListener("click", async () => {
+    const take = await pickAudioAsTake();
+    if (!take) return;
+    showChapterResult(take);
+    showToast(`${t("Put back")}: ${take.name}`);
+  });
   el("#chapter-edit").addEventListener("click", () => {
     if (chapterResult) editAudio(t("Chapter"), chapterResult.wavBase64, (edited) => showChapterResult(edited));
   });
@@ -11307,6 +11412,16 @@ function initMontage(): void {
         clip.result = edited;
         renderMontage();
       });
+    } else if (action === "export") {
+      void saveResultToFile(clip.result, clip.label || t("Fragment"), "wav");
+    } else if (action === "import") {
+      void pickAudioAsTake().then((take) => {
+        if (!take) return;
+        clip.result = take;
+        montageResult = null;
+        renderMontage();
+        showToast(`${t("Put back")}: ${take.name}`);
+      });
     } else if (action === "remove") {
       montageClips.splice(index, 1);
       renderMontage();
@@ -11319,6 +11434,12 @@ function initMontage(): void {
   });
 
   montageWave = makeWavePanel("#montage-audio", showMontageResult);
+  el("#montage-import").addEventListener("click", async () => {
+    const take = await pickAudioAsTake();
+    if (!take) return;
+    showMontageResult(take);
+    showToast(`${t("Put back")}: ${take.name}`);
+  });
   el("#montage-edit").addEventListener("click", () => {
     if (!montageResult) return;
     editAudio(t("Joined track"), montageResult.wavBase64, (edited) => showMontageResult(edited));
@@ -12033,6 +12154,7 @@ async function main(): Promise<void> {
       lastResult: () => lastResult,
       exportBookM4b,
       setMontageBed,
+      pickNextAudio: (path: string) => { testPickedAudio = path; },
       openAudiobookExport: (book: boolean) => openAudiobookExport(chapterResult, "Chapter", book),
       setCover: (path: string) => {
         audiobookCover = path;
