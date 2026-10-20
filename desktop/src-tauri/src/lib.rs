@@ -4851,6 +4851,56 @@ async fn ffmpeg_m4b(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
+/// Подготовка голоса: начало записи (любой формат, видео тоже) как WAV 44,1 кГц моно,
+/// не длиннее `max_seconds`. Возвращает путь к временному WAV и длины.
+#[tauri::command]
+async fn voiceprep_excerpt(audio_path: String, max_seconds: f64) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let (wav, rate, _channels, _count) =
+            audio::decode_to_pcm16_wav(&audio_path, Some(44_100)).map_err(|e| e.to_string())?;
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(wav)).map_err(|e| e.to_string())?;
+        let spec = reader.spec();
+        let ch = spec.channels.max(1) as usize;
+        let samples: Vec<i16> = reader.samples::<i16>().collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        let total_frames = samples.len() / ch;
+        let keep = ((max_seconds.max(1.0) * rate as f64) as usize).min(total_frames);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let out = std::env::temp_dir().join(format!("dramastudio_voiceprep_{stamp}.wav"));
+        let mono = hound::WavSpec { channels: 1, sample_rate: rate as u32, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let mut writer = hound::WavWriter::create(&out, mono).map_err(|e| e.to_string())?;
+        for f in 0..keep {
+            let sum: i32 = (0..ch).map(|c| samples[f * ch + c] as i32).sum();
+            writer.write_sample((sum / ch as i32) as i16).map_err(|e| e.to_string())?;
+        }
+        writer.finalize().map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "path": out.to_string_lossy(),
+            "seconds": keep as f64 / rate as f64,
+            "totalSeconds": total_frames as f64 / rate as f64,
+        }))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+/// Подготовка голоса: голос из записи без музыки и фона (Mel-Band Roformer).
+/// Нужна скачанная очистка голоса; возвращает путь к очищенному WAV.
+#[tauri::command]
+async fn voiceclean_wav(audio_path: String) -> Result<String, String> {
+    if !voiceclean::is_installed() {
+        return Err("очистка голоса не скачана".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let wav = audio::ensure_wav(&audio_path).map_err(|e| e.to_string())?;
+        voiceclean::clean_voice(&wav)
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 /// Студия голоса: высота тона (полутоны) и форманты («возраст») записи вокодером WORLD.
 /// Принимает и возвращает WAV в base64; результат моно 16 бит.
 #[tauri::command]
@@ -5131,6 +5181,8 @@ pub fn run() {
             ffmpeg_mux,
             ffmpeg_m4b,
             scan_speaker_folders,
+            voiceprep_excerpt,
+            voiceclean_wav,
             project_prepare_dir,
             read_file_base64,
             project_cleanup_audio,

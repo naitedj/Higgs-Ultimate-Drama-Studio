@@ -207,6 +207,7 @@
             <button class="mode-tab drama-only hidden" data-mode="subtitles" role="tab" aria-selected="false">Subtitles</button>
             <button class="mode-tab drama-only hidden" data-mode="video" role="tab" aria-selected="false">Video</button>
             <button class="mode-tab drama-only hidden" data-mode="voicestudio" role="tab" aria-selected="false">Voice Studio</button>
+            <button class="mode-tab drama-only hidden" data-mode="voiceprep" role="tab" aria-selected="false">Voice preparation</button>
             <button class="mode-tab" data-mode="api" role="tab" aria-selected="false">API</button>
             <button class="mode-tab" data-mode="speakers" role="tab" aria-selected="false">Speaker Gallery</button>
             <button class="mode-tab" data-mode="batch" role="tab" aria-selected="false">Batch</button>
@@ -1075,6 +1076,84 @@
           </div>
 
           <!-- ═══ Voice Studio: a saved voice, slightly changed ═══ -->
+          <div class="mode-content hidden" id="mode-voiceprep">
+            <div class="history-head">
+              <h3>Voice preparation</h3>
+            </div>
+            <p class="input-hint">A recording of any length (audiobook, film, interview, even a video) becomes a good reference for a Drama 3 voice: music and background are removed, the best 10–20 s of whole sentences are found, pauses are shortened and the loudness evened. The text of the recording comes from recognition.</p>
+            <section class="workflow-section">
+              <div class="action-row">
+                <button id="vp-choose" class="compact-button" type="button">📂 Choose a recording…</button>
+                <span id="vp-file-name" class="api-status-text">no file</span>
+              </div>
+              <div class="vp-options">
+                <label class="chapter-field" title="A long file is not needed whole: its beginning is enough to find a good stretch">
+                  <span>Take from the file, minutes</span>
+                  <input id="vp-minutes" type="number" class="number-input" min="1" max="60" step="1" value="10" />
+                </label>
+                <label class="inline-toggle" title="A neural network (Mel-Band Roformer) leaves only the voice: music, background sounds and effects go">
+                  <span>Remove music and background</span>
+                  <span class="toggle-switch"><input type="checkbox" id="vp-clean" checked /><span class="toggle-slider"></span></span>
+                </label>
+                <label class="inline-toggle" title="Low hum and rumble cut, noise between phrases made quieter">
+                  <span>Cut hum and noise</span>
+                  <span class="toggle-switch"><input type="checkbox" id="vp-filter" checked /><span class="toggle-slider"></span></span>
+                </label>
+                <label class="inline-toggle" title="The reference at an even loudness (−20 LUFS)">
+                  <span>Even out loudness</span>
+                  <span class="toggle-switch"><input type="checkbox" id="vp-level" checked /><span class="toggle-slider"></span></span>
+                </label>
+                <label class="inline-toggle" title="The recording has several people: phrases get speaker numbers, and a stretch is taken from one speaker">
+                  <span>Several voices in the recording</span>
+                  <span class="toggle-switch"><input type="checkbox" id="vp-diarize" /><span class="toggle-slider"></span></span>
+                  <span id="vp-diarize-note" class="api-status-text"></span>
+                </label>
+              </div>
+              <div class="action-row">
+                <span id="vp-clean-note" class="api-status-text"></span>
+                <button id="vp-download-clean" class="compact-button hidden" type="button">⬇ Download voice cleaning (~415 MB)</button>
+                <span id="vp-asr-note" class="warn-text hidden">Recognition needs the Parakeet model: ⚙ Settings.</span>
+              </div>
+              <div class="action-row">
+                <button id="vp-run" class="primary-btn" type="button" disabled>▶ Prepare</button>
+                <span id="vp-status" class="api-status-text"></span>
+              </div>
+            </section>
+            <section id="vp-phrases-section" class="workflow-section hidden">
+              <div class="section-head"><h3>Best stretches</h3></div>
+              <div id="vp-fragments" class="vp-fragments"></div>
+              <audio id="vp-source-audio" controls preload="auto" class="vp-source-audio"></audio>
+              <div class="section-head"><h3>Phrases</h3></div>
+              <p class="input-hint">Tick the phrases for the reference (neighbouring phrases are best), ▶ listens to one. Then press Make the reference.</p>
+              <div id="vp-phrases" class="vp-phrases"></div>
+              <div class="action-row">
+                <span id="vp-chosen-info" class="api-status-text"></span>
+                <button id="vp-clear" class="compact-button" type="button">Clear the choice</button>
+                <button id="vp-build" class="primary-btn" type="button">⧉ Make the reference</button>
+              </div>
+            </section>
+            <section id="vp-result-section" class="workflow-section hidden">
+              <div class="output-head">
+                <h3>Prepared reference</h3>
+                <span id="vp-result-info" class="api-status-text"></span>
+              </div>
+              <audio id="vp-result-audio" controls preload="auto"></audio>
+              <label class="field-label" for="vp-text">Text of the recording (word for word — check it)</label>
+              <textarea id="vp-text" class="text-area" rows="3" spellcheck="false"></textarea>
+              <div class="action-row">
+                <label class="chapter-field"><span>Voice name</span><input id="vp-name" class="text-input" type="text" /></label>
+                <button id="vp-save-gallery" class="primary-btn" type="button">＋ Save to the gallery as a new voice</button>
+              </div>
+              <div class="action-row">
+                <span class="field-label">Or another recording of</span>
+                <select id="vp-extra-target" class="select-input"></select>
+                <button id="vp-add-extra" class="compact-button" type="button">＋ Add</button>
+                <button id="vp-edit" class="compact-button" type="button">✂ Edit</button>
+                <button id="vp-save-wav" class="compact-button" type="button">Save WAV</button>
+              </div>
+            </section>
+          </div>
+
           <div class="mode-content hidden" id="mode-voicestudio">
             <div class="history-head">
               <h3>Voice Studio</h3>

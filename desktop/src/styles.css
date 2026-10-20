@@ -2433,6 +2433,19 @@ input[type="range"]::-moz-range-thumb {
 .chapter-piece-speaker-select { border-color: var(--speaker-color); color: var(--speaker-color); font-size: 12px; font-weight: 700; max-width: 220px; min-height: 26px; padding: 2px 6px; }
 .scene-character-row { grid-template-columns: 28px minmax(110px, 0.7fr) minmax(140px, 0.9fr) minmax(150px, 1.2fr) minmax(150px, 1fr) auto; }
 .chapter-style-input { min-width: 230px; }
+.vp-options { align-items: center; display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 10px 0; }
+.vp-fragments { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-bottom: 10px; }
+.vp-fragment { border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; }
+.vp-fragment-head { align-items: center; display: flex; gap: 8px; }
+.vp-fragment-head span { color: var(--text-secondary); flex: 1; font-size: 12px; }
+.vp-fragment-text { font-size: 13px; margin: 6px 0 4px; }
+.vp-fragment-notes { color: var(--accent); font-size: 12px; margin: 0; }
+.vp-source-audio { margin-bottom: 10px; width: 100%; }
+.vp-phrases { border: 1px solid var(--border); border-radius: 4px; display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; }
+.vp-phrase { align-items: center; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; gap: 8px; padding: 4px 8px; }
+.vp-phrase.chosen { background: rgba(37, 184, 171, 0.12); }
+.vp-phrase-time { color: var(--text-secondary); flex: 0 0 110px; font-size: 12px; }
+.vp-phrase-text { font-size: 13px; }
 .help-panel { display: flex; flex-direction: column; height: 88vh; max-width: 1150px; width: min(1150px, 95vw); }
 .help-head { align-items: center; display: flex; gap: 14px; }
 .help-head h3 { margin: 0; white-space: nowrap; }

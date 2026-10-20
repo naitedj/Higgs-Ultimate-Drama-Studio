@@ -64,6 +64,8 @@ import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import { createWavePanel } from "./wavePanel";
 import { initEmotionBuilder, openEmotionBuilder } from "./emotionBuilder";
 import { initHelp } from "./helpWindow";
+import { bestFragments, buildReference, gateNoise, highPass, phraseInfo } from "./voicePrep";
+import type { Fragment, PhraseInfo } from "./voicePrep";
 import type { WavePanel } from "./wavePanel";
 import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
 import type { SubtitleCue } from "./subtitles";
@@ -1476,11 +1478,12 @@ function switchMode(mode: Mode): void {
     content.classList.toggle("hidden", content.id !== `mode-${mode}`);
   }
   // Hide generation UI in utility views.
-  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio" || mode === "subtitles" || mode === "video";
+  const isUtility = mode === "history" || mode === "api" || mode === "speakers" || mode === "batch" || mode === "transcript" || mode === "montage" || mode === "chapter" || mode === "voicestudio" || mode === "voiceprep" || mode === "subtitles" || mode === "video";
   if (mode === "batch") refreshBatchPersonaOptions();
   if (mode === "montage") renderMontageHistorySelect();
   if (mode === "chapter") refreshChapterVoiceOptions();
   if (mode === "voicestudio") renderStudioSources();
+  if (mode === "voiceprep") void renderVoicePrepStatus();
   if (mode === "subtitles") refreshSubsVoiceOptions();
   if (mode === "video") void refreshVideoTrack();
   if (mode === "transcript") void refreshTranscriptModelNote();
@@ -4862,7 +4865,7 @@ function applyEngineKind(kind: EngineKind): void {
   for (const tab of document.querySelectorAll<HTMLButtonElement>(".mode-tab")) {
     if (HIGGS_ONLY_MODES.includes(tab.dataset.mode as Mode)) tab.classList.toggle("hidden", drama);
   }
-  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio" || currentMode === "subtitles" || currentMode === "video";
+  const unavailable = drama ? HIGGS_ONLY_MODES.includes(currentMode) : currentMode === "chapter" || currentMode === "voicestudio" || currentMode === "voiceprep" || currentMode === "subtitles" || currentMode === "video";
   switchMode(unavailable ? "tts" : currentMode);
   if (drama) renderDramaChips();
   else void refreshHiggsChips();
@@ -9715,6 +9718,382 @@ function initBook(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Voice preparation: a long recording → a good reference. The beginning of the
+// file is taken, cleaned (music and background by the vocal separator if it is
+// downloaded, rumble cut, noise between phrases lowered), recognised into
+// phrases with times; the best 10–20 s of whole sentences are offered, and the
+// chosen phrases become the reference (pauses shortened, level evened), which
+// goes to the Speaker Gallery as a new voice or another recording of a voice.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const VOICEPREP_STORAGE_KEY = "dramaStudio.voicePrep";
+let voicePrepSource: { path: string; name: string } | null = null;
+let voicePrepPcm: WavPcm | null = null;
+let voicePrepUrl = "";
+let voicePrepPhrases: PhraseInfo[] = [];
+let voicePrepFragments: Fragment[] = [];
+let voicePrepChosen = new Set<number>();
+let voicePrepResult: GenerationResult | null = null;
+let voicePrepResultUrl = "";
+let voicePrepBusy = false;
+let voicePrepWave: WavePanel | null = null;
+let voicePrepStopAt = 0;
+
+function voicePrepSettings(): { minutes: number; clean: boolean; filter: boolean; level: boolean; diarize: boolean } {
+  return {
+    minutes: Math.min(60, Math.max(1, parseFloat(el<HTMLInputElement>("#vp-minutes").value) || 10)),
+    clean: el<HTMLInputElement>("#vp-clean").checked,
+    filter: el<HTMLInputElement>("#vp-filter").checked,
+    level: el<HTMLInputElement>("#vp-level").checked,
+    diarize: el<HTMLInputElement>("#vp-diarize").checked,
+  };
+}
+
+function saveVoicePrepSettings(): void {
+  try {
+    localStorage.setItem(VOICEPREP_STORAGE_KEY, JSON.stringify(voicePrepSettings()));
+  } catch {
+    // A convenience.
+  }
+}
+
+async function renderVoicePrepStatus(): Promise<void> {
+  const clean = await invoke<{ installed: boolean }>("voiceclean_status").catch(() => ({ installed: false }));
+  const diar = await invoke<{ installed: boolean }>("sortformer_status").catch(() => ({ installed: false }));
+  el("#vp-clean-note").textContent = clean.installed
+    ? t("Voice cleaning is installed.")
+    : t("Voice cleaning (removing music and background) is not downloaded: about 415 MB, once.");
+  el("#vp-download-clean").classList.toggle("hidden", clean.installed);
+  const toggle = el<HTMLInputElement>("#vp-clean");
+  toggle.disabled = !clean.installed;
+  if (!clean.installed) toggle.checked = false;
+  const diarize = el<HTMLInputElement>("#vp-diarize");
+  diarize.disabled = !diar.installed;
+  if (!diar.installed) diarize.checked = false;
+  el("#vp-diarize-note").textContent = diar.installed ? "" : t("(needs the diarization model: Transcript tab)");
+  el("#vp-asr-note").classList.toggle("hidden", Boolean(localStorage.getItem("higgsAudio.whisperModel")));
+}
+
+function setVoicePrepStatus(text: string): void {
+  el("#vp-status").textContent = text;
+}
+
+async function chooseVoicePrepFile(): Promise<void> {
+  const selected = await open({ filters: [{ name: "Audio / video", extensions: ["wav", "mp3", "flac", "m4a", "ogg", "opus", "aac", "mp4", "mkv", "webm", "mov"] }] });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (!path) return;
+  setVoicePrepFile(path);
+}
+
+function setVoicePrepFile(path: string): void {
+  voicePrepSource = { path, name: path.split(/[/\\]/).pop() || path };
+  el("#vp-file-name").textContent = voicePrepSource.name;
+  el<HTMLButtonElement>("#vp-run").disabled = false;
+  const name = el<HTMLInputElement>("#vp-name");
+  if (!name.value.trim()) name.value = voicePrepSource.name.replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").trim().slice(0, 40);
+}
+
+/** Cut the beginning, clean, recognise; then offer the best stretches. */
+async function runVoicePrep(): Promise<void> {
+  if (!voicePrepSource || voicePrepBusy) return;
+  const settings = voicePrepSettings();
+  saveVoicePrepSettings();
+  const asr = localStorage.getItem("higgsAudio.whisperModel") || "";
+  if (!asr) {
+    showToast(t("Download the Parakeet model in Settings first"), "warning");
+    return;
+  }
+  voicePrepBusy = true;
+  el<HTMLButtonElement>("#vp-run").disabled = true;
+  el("#vp-phrases-section").classList.add("hidden");
+  el("#vp-result-section").classList.add("hidden");
+  try {
+    setVoicePrepStatus(t("Reading the recording…"));
+    const excerpt = await invoke<{ path: string; seconds: number; totalSeconds: number }>("voiceprep_excerpt", {
+      audioPath: voicePrepSource.path,
+      maxSeconds: settings.minutes * 60,
+    });
+    let workPath = excerpt.path;
+    if (settings.clean) {
+      setVoicePrepStatus(`${t("Removing music and background")} (${formatTime(excerpt.seconds)})… ${t("this can take a few minutes")}`);
+      try {
+        workPath = await invoke<string>("voiceclean_wav", { audioPath: excerpt.path });
+      } catch (e) {
+        showToast(`${t("Voice cleaning failed, going on without it")}: ${e}`, "warning");
+      }
+    }
+    setVoicePrepStatus(t("Cleaning up rumble and noise…"));
+    await nextFrame();
+    let pcm = parseWavPcm(await invoke<string>("read_file_base64", { path: workPath }));
+    if (pcm.channels > 1) pcm = convertChannels(pcm, 1);
+    if (settings.filter) pcm = gateNoise(highPass(pcm, 75));
+    const processed = pcmToResult(pcm);
+    const processedPath = await invoke<string>("drama_temp_path", { name: "voiceprep_clean.wav" });
+    await invoke("save_binary_file", { path: processedPath, base64Data: processed.wavBase64 });
+    setVoicePrepStatus(t("Recognising the phrases…"));
+    const transcript = await invoke<TranscriptResult>("diarize_transcribe", { audioPath: processedPath, whisperModelPath: asr, diarize: settings.diarize });
+    voicePrepPcm = pcm;
+    voicePrepPhrases = phraseInfo(transcript.segments, pcm);
+    voicePrepFragments = bestFragments(voicePrepPhrases);
+    voicePrepChosen = new Set(voicePrepFragments[0]?.phrases || []);
+    if (voicePrepUrl) URL.revokeObjectURL(voicePrepUrl);
+    voicePrepUrl = URL.createObjectURL(await base64ToBlobAsync(processed.wavBase64, "audio/wav"));
+    el<HTMLAudioElement>("#vp-source-audio").src = voicePrepUrl;
+    renderVoicePrepPhrases();
+    el("#vp-phrases-section").classList.remove("hidden");
+    const taken = excerpt.totalSeconds > excerpt.seconds + 1 ? ` (${t("first")} ${formatTime(excerpt.seconds)} ${t("of")} ${formatTime(excerpt.totalSeconds)})` : "";
+    setVoicePrepStatus(`${t("Phrases")}: ${voicePrepPhrases.length}${taken}. ${voicePrepFragments.length > 0 ? t("The best stretches are below; the first one is chosen.") : t("No stretch of 10–20 s of whole sentences: choose the phrases yourself.")}`);
+    if (voicePrepChosen.size > 0) await buildVoicePrepResult();
+  } catch (e) {
+    setVoicePrepStatus("");
+    showToast(`${t("Could not prepare the voice")}: ${e}`, "error");
+  } finally {
+    voicePrepBusy = false;
+    el<HTMLButtonElement>("#vp-run").disabled = !voicePrepSource;
+  }
+}
+
+function voicePrepChosenSeconds(): number {
+  const sorted = [...voicePrepChosen].sort((a, b) => a - b);
+  let seconds = 0;
+  sorted.forEach((index, k) => {
+    const phrase = voicePrepPhrases[index];
+    seconds += phrase.end - phrase.start;
+    if (k > 0) {
+      const gap = sorted[k - 1] === index - 1 ? phrase.start - voicePrepPhrases[index - 1].end : 0.35;
+      seconds += Math.min(0.35, Math.max(0, gap));
+    }
+  });
+  return seconds;
+}
+
+function renderVoicePrepPhrases(): void {
+  const fragments = el<HTMLElement>("#vp-fragments");
+  fragments.innerHTML = voicePrepFragments.map((f, i) => `
+    <div class="vp-fragment" data-index="${i}">
+      <div class="vp-fragment-head">
+        <strong>${i + 1}</strong>
+        <span>${formatTime(f.start)} · ${f.seconds.toFixed(1)} ${escapeHtml(t("s"))}</span>
+        <button class="ref-play" data-action="play-fragment" type="button">▶</button>
+        <button class="compact-button" data-action="choose-fragment" type="button">${escapeHtml(t("Choose"))}</button>
+      </div>
+      <p class="vp-fragment-text"></p>
+      <p class="vp-fragment-notes"></p>
+    </div>`).join("");
+  voicePrepFragments.forEach((f, i) => {
+    const card = fragments.querySelector<HTMLElement>(`.vp-fragment[data-index="${i}"]`)!;
+    card.querySelector(".vp-fragment-text")!.textContent = f.text.length > 220 ? `${f.text.slice(0, 220)}…` : f.text;
+    card.querySelector(".vp-fragment-notes")!.textContent = f.notes.join(" · ");
+  });
+  const list = el<HTMLElement>("#vp-phrases");
+  list.innerHTML = "";
+  voicePrepPhrases.forEach((phrase, index) => {
+    const row = document.createElement("label");
+    row.className = `vp-phrase${voicePrepChosen.has(index) ? " chosen" : ""}`;
+    row.dataset.index = String(index);
+    row.innerHTML = `
+      <input type="checkbox" ${voicePrepChosen.has(index) ? "checked" : ""} />
+      <button class="ref-play" data-action="play-phrase" type="button">▶</button>
+      <span class="vp-phrase-time">${formatTime(phrase.start)} · ${(phrase.end - phrase.start).toFixed(1)} ${escapeHtml(t("s"))}</span>
+      <span class="vp-phrase-text"></span>
+    `;
+    const text = row.querySelector<HTMLElement>(".vp-phrase-text")!;
+    text.textContent = `${voicePrepPhrases.some((p) => p.speaker !== 0) ? `[${phrase.speaker + 1}] ` : ""}${phrase.text}`;
+    list.appendChild(row);
+  });
+  const seconds = voicePrepChosenSeconds();
+  const info = el("#vp-chosen-info");
+  info.textContent = voicePrepChosen.size > 0
+    ? `${t("Chosen")}: ${voicePrepChosen.size} · ${seconds.toFixed(1)} ${t("s")}${seconds < 8 ? ` — ${t("too short, 10–20 s is best")}` : seconds > 25 ? ` — ${t("too long, 10–20 s is best")}` : ""}`
+    : t("Choose phrases: a best stretch above, or tick them in the list.");
+  info.classList.toggle("warn-text", voicePrepChosen.size > 0 && (seconds < 8 || seconds > 25));
+  el<HTMLButtonElement>("#vp-build").disabled = voicePrepChosen.size === 0;
+}
+
+/** Plays a stretch of the cleaned recording. */
+function playVoicePrepRange(start: number, end: number): void {
+  const audio = el<HTMLAudioElement>("#vp-source-audio");
+  audio.currentTime = Math.max(0, start - 0.05);
+  voicePrepStopAt = end + 0.15;
+  void audio.play();
+}
+
+async function buildVoicePrepResult(): Promise<void> {
+  if (!voicePrepPcm || voicePrepChosen.size === 0) return;
+  const built = buildReference(voicePrepPcm, voicePrepPhrases, [...voicePrepChosen]);
+  let result = pcmToResult(built.pcm);
+  if (voicePrepSettings().level) {
+    try {
+      result = { ...result, wavBase64: await invoke<string>("normalize_wav", { wavBase64: result.wavBase64, targetLufs: -20 }) };
+    } catch {
+      // Loudness is a help: the reference works without it.
+    }
+  }
+  el<HTMLTextAreaElement>("#vp-text").value = built.text;
+  showVoicePrepResult(result);
+}
+
+function showVoicePrepResult(result: GenerationResult): void {
+  voicePrepResult = result;
+  void base64ToBlobAsync(result.wavBase64, "audio/wav").then((blob) => {
+    if (voicePrepResultUrl) URL.revokeObjectURL(voicePrepResultUrl);
+    voicePrepResultUrl = URL.createObjectURL(blob);
+    const audio = el<HTMLAudioElement>("#vp-result-audio");
+    audio.src = voicePrepResultUrl;
+    audio.load();
+  });
+  el("#vp-result-info").textContent = `${resultSeconds(result).toFixed(1)} ${t("s")}`;
+  el("#vp-result-section").classList.remove("hidden");
+  voicePrepWave?.show(result);
+}
+
+async function voicePrepResultFile(): Promise<string> {
+  const path = await invoke<string>("drama_temp_path", { name: `voiceprep_${Date.now()}.wav` });
+  await invoke("save_binary_file", { path, base64Data: voicePrepResult!.wavBase64 });
+  return path;
+}
+
+/** The prepared reference as a new Speaker Gallery voice, with its Drama 3 voice. */
+async function saveVoicePrepToGallery(): Promise<void> {
+  if (!voicePrepResult) return;
+  const name = el<HTMLInputElement>("#vp-name").value.trim();
+  const text = el<HTMLTextAreaElement>("#vp-text").value.trim();
+  if (!name) {
+    showToast(t("Give the new voice a name"), "warning");
+    return;
+  }
+  if (!text) {
+    showToast(t("The text of the recording is empty"), "warning");
+    return;
+  }
+  const button = el<HTMLButtonElement>("#vp-save-gallery");
+  button.disabled = true;
+  try {
+    const persona = createBlankPersona();
+    persona.name = name;
+    const stored = await storeSpeakerAsset(persona, await voicePrepResultFile(), "audio");
+    persona.refPath = stored.path;
+    persona.refName = `${name}.wav`;
+    persona.refText = text;
+    persona.notes = `${t("Prepared from")}: ${voicePrepSource?.name || ""}`;
+    persona.updatedAt = Date.now();
+    speakerPersonas.push(persona);
+    selectedGalleryPersonaId = persona.id;
+    saveSpeakerPersonas();
+    renderVoicePrepPersonas();
+    await makeDramaVoiceForPersona(persona);
+  } catch (e) {
+    showToast(`${t("Could not save the voice")}: ${e}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** The prepared reference as one more recording of an existing voice. */
+async function addVoicePrepAsExtra(): Promise<void> {
+  if (!voicePrepResult) return;
+  const persona = speakerPersonas.find((p) => p.id === el<HTMLSelectElement>("#vp-extra-target").value);
+  const text = el<HTMLTextAreaElement>("#vp-text").value.trim();
+  if (!persona) {
+    showToast(t("Choose a voice from the Speaker Gallery"), "warning");
+    return;
+  }
+  if (!text) {
+    showToast(t("The text of the recording is empty"), "warning");
+    return;
+  }
+  try {
+    const stored = await invoke<{ path: string; fileName: string }>("store_speaker_extra_asset", {
+      speakerId: persona.id,
+      speakerName: persona.name,
+      sourcePath: await voicePrepResultFile(),
+    });
+    persona.extraRefs = [...(persona.extraRefs || []), { path: stored.path, name: `${voicePrepSource?.name || "voice"}.wav`, text }];
+    persona.updatedAt = Date.now();
+    saveSpeakerPersonas();
+    showToast(`${t("Added as another recording of")} ${persona.name}. ${t("Remake its Drama 3 voice in the Speaker Gallery.")}`);
+  } catch (e) {
+    showToast(`${t("Could not save the voice")}: ${e}`, "error");
+  }
+}
+
+function renderVoicePrepPersonas(): void {
+  const select = document.querySelector<HTMLSelectElement>("#vp-extra-target");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = speakerPersonas.filter((p) => p.refPath).map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+  if (current) select.value = current;
+}
+
+function initVoicePrep(): void {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VOICEPREP_STORAGE_KEY) || "{}") || {};
+    if (typeof saved.minutes === "number") el<HTMLInputElement>("#vp-minutes").value = String(saved.minutes);
+    for (const [id, key] of [["#vp-clean", "clean"], ["#vp-filter", "filter"], ["#vp-level", "level"], ["#vp-diarize", "diarize"]] as const) {
+      if (typeof saved[key] === "boolean") el<HTMLInputElement>(id).checked = saved[key];
+    }
+  } catch {
+    // Defaults.
+  }
+  for (const id of ["#vp-minutes", "#vp-clean", "#vp-filter", "#vp-level", "#vp-diarize"]) el(id).addEventListener("change", saveVoicePrepSettings);
+  el("#vp-choose").addEventListener("click", () => void chooseVoicePrepFile());
+  el("#vp-run").addEventListener("click", () => void runVoicePrep());
+  el("#vp-download-clean").addEventListener("click", async () => {
+    await downloadVoiceCleanModel("#vp-download-clean");
+    await renderVoicePrepStatus();
+  });
+  el("#vp-build").addEventListener("click", () => void buildVoicePrepResult());
+  el("#vp-clear").addEventListener("click", () => {
+    voicePrepChosen.clear();
+    renderVoicePrepPhrases();
+  });
+  el("#vp-save-gallery").addEventListener("click", () => void saveVoicePrepToGallery());
+  el("#vp-add-extra").addEventListener("click", () => void addVoicePrepAsExtra());
+  el("#vp-save-wav").addEventListener("click", () => {
+    if (voicePrepResult) void saveResultToFile(voicePrepResult, el<HTMLInputElement>("#vp-name").value.trim() || "voice", "wav");
+  });
+  el("#vp-edit").addEventListener("click", () => {
+    if (voicePrepResult) editAudio(t("Voice preparation"), voicePrepResult.wavBase64, (edited) => showVoicePrepResult(edited));
+  });
+  voicePrepWave = makeWavePanel("#vp-result-audio", showVoicePrepResult);
+  const source = el<HTMLAudioElement>("#vp-source-audio");
+  source.addEventListener("timeupdate", () => {
+    if (voicePrepStopAt > 0 && source.currentTime >= voicePrepStopAt) {
+      source.pause();
+      voicePrepStopAt = 0;
+    }
+  });
+  el("#vp-fragments").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    const fragment = voicePrepFragments[Number(button?.closest<HTMLElement>(".vp-fragment")?.dataset.index)];
+    if (!button || !fragment) return;
+    if (button.dataset.action === "play-fragment") playVoicePrepRange(fragment.start, fragment.end);
+    else {
+      voicePrepChosen = new Set(fragment.phrases);
+      renderVoicePrepPhrases();
+      void buildVoicePrepResult();
+    }
+  });
+  el("#vp-phrases").addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>(".vp-phrase");
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    if (target.closest('[data-action="play-phrase"]')) {
+      event.preventDefault();
+      const phrase = voicePrepPhrases[index];
+      playVoicePrepRange(phrase.start, phrase.end);
+      return;
+    }
+    if (target.tagName !== "INPUT") return;
+    if ((target as HTMLInputElement).checked) voicePrepChosen.add(index);
+    else voicePrepChosen.delete(index);
+    renderVoicePrepPhrases();
+  });
+  renderVoicePrepPersonas();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Voice Studio: a gallery voice slightly changed. Its recordings are shifted in
 // pitch and tempo, Drama 3 copies the changed recordings; a trial take uses a
 // temporary voice, and what is liked is saved as a new gallery voice.
@@ -12162,6 +12541,7 @@ async function main(): Promise<void> {
   initVoiceSamples();
   initMontageBed();
   initHelp(() => currentMode);
+  initVoicePrep();
   initVoiceStudio();
   initSubtitles();
   initVideo();
@@ -12176,6 +12556,7 @@ async function main(): Promise<void> {
       exportBookM4b,
       setMontageBed,
       pickNextAudio: (path: string) => { testPickedAudio = path; },
+      setVoicePrepFile,
       openAudiobookExport: (book: boolean) => openAudiobookExport(chapterResult, "Chapter", book),
       setCover: (path: string) => {
         audiobookCover = path;
