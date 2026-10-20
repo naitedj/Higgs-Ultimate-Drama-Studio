@@ -823,7 +823,10 @@ export const RU: Record<string, string> = {
   "takes": "дублей",
   "pieces": "кусков",
   "to check": "проверить",
-  "The text was changed: redo this piece": "Изменён текст или говорящий — переделайте этот кусок",
+  "The text was changed: redo this piece": "Изменён текст — переделайте этот кусок",
+  "The voice or manner changed: redo this piece": "Изменился голос или манера — переделайте этот кусок",
+  "Voice the whole chapter again? The present takes will be replaced.": "Озвучить всю главу заново? Нынешние дубли будут заменены.",
+  "Voice everything again": "Переозвучить всё",
   "Paste the chapter text first": "Сначала вставьте текст главы",
   "Add characters in the Multi Speaker tab first, or turn off dialogue in the characters' voices":
     "Сначала добавьте персонажей во вкладке «Мультиспикер» или выключите «Диалоги голосами персонажей»",

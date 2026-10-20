@@ -5914,6 +5914,7 @@ let sceneLinePlaying = -1;
 function persistDramaScene(): void {
   saveDramaScene(dramaScene);
   scheduleProjectSave();
+  chapterVoicesChanged();
 }
 
 function sceneColor(index: number): string {
@@ -8118,6 +8119,10 @@ type ChapterPieceState = ChapterPiece & {
   attempts: number;
   /** The text was edited after the take: it needs a new one. */
   stale: boolean;
+  /** Why the take is out of date: its text, or the voice or manner it was read with. */
+  staleWhy?: "text" | "voice";
+  /** The voice and text (with the manner) the take was made with, to notice a change. */
+  voicedWith?: string;
 };
 type ChapterSettings = {
   text: string;
@@ -8252,24 +8257,52 @@ function chapterSpeakerOptions(current: number): string {
   return options.join("");
 }
 
-/** The voice and text a piece is generated with. */
-function chapterPieceRequest(piece: ChapterPieceState): { text: string; voice: string } {
-  const loaded = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+/** The voice and text (with the manner) a piece should be read with. */
+function chapterPieceWanted(piece: ChapterPieceState): { text: string; voice: string; who: string } {
   if (piece.character >= 0) {
     const character = chapterCharacter(piece.character);
-    const voice = character && character.voice !== "none" && loaded.has(character.voice) ? character.voice : "none";
-    if (character && character.voice !== "none" && voice === "none") {
-      throw new Error(`${t("Voice not found")}: ${character.voice} (${character.name})`);
-    }
-    return { text: `${characterLineHint(character)}${piece.text}`, voice };
+    return { text: `${characterLineHint(character)}${piece.text}`, voice: character?.voice || "none", who: character?.name || "" };
   }
   const settings = readChapterSettings();
-  const voice = settings.voice;
-  if (voice !== "none" && !loaded.has(voice)) throw new Error(`${t("Voice not found")}: ${voice}`);
   // The narrator's manner: the chapter's own, else the scene narrator's.
   const sceneNarrator = dramaScene.characters[findNarrator(dramaScene.characters)];
   const style = settings.narratorStyle.trim() ? { style: settings.narratorStyle } : sceneNarrator;
-  return { text: `${characterStyleHint(style)}${piece.text}`, voice };
+  return { text: `${characterStyleHint(style)}${piece.text}`, voice: settings.voice, who: "" };
+}
+
+function chapterPieceSignature(piece: ChapterPieceState): string {
+  const wanted = chapterPieceWanted(piece);
+  return `${wanted.voice}\n${wanted.text}`;
+}
+
+/** The voice and text a piece is generated with. */
+function chapterPieceRequest(piece: ChapterPieceState): { text: string; voice: string } {
+  const loaded = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+  const { text, voice, who } = chapterPieceWanted(piece);
+  if (voice !== "none" && !loaded.has(voice)) {
+    throw new Error(`${t("Voice not found")}: ${voice}${who ? ` (${who})` : ""}`);
+  }
+  return { text, voice };
+}
+
+/** Marks voiced pieces whose voice or manner changed since the take (narrator or characters). */
+function markChangedChapterPieces(): boolean {
+  let changed = false;
+  for (const piece of chapterPieces) {
+    if (!piece.result || piece.stale || piece.voicedWith === undefined) continue;
+    if (chapterPieceSignature(piece) !== piece.voicedWith) {
+      piece.stale = true;
+      piece.staleWhy = "voice";
+      changed = true;
+    }
+  }
+  if (changed) chapterResult = null;
+  return changed;
+}
+
+/** After a change of a voice or manner: marks the pieces it touches and shows them. */
+function chapterVoicesChanged(): void {
+  if (markChangedChapterPieces() && !chapterRunning) renderChapterPieces();
 }
 
 const CHAPTER_STATUS_LABEL: Record<ChapterPieceStatus, string> = {
@@ -8312,7 +8345,11 @@ function renderChapterPieces(): void {
     `;
     row.querySelector<HTMLTextAreaElement>(".chapter-piece-text")!.value = piece.text;
     const reason = row.querySelector<HTMLElement>(".chapter-piece-reason");
-    if (reason) reason.textContent = piece.stale ? t("The text was changed: redo this piece") : piece.reason;
+    if (reason) {
+      reason.textContent = !piece.stale
+        ? piece.reason
+        : piece.staleWhy === "voice" ? t("The voice or manner changed: redo this piece") : t("The text was changed: redo this piece");
+    }
     list.appendChild(row);
   });
   const done = chapterPieces.filter((p) => p.result).length;
@@ -8443,6 +8480,8 @@ async function voiceChapterPiece(piece: ChapterPieceState): Promise<void> {
   piece.coverage = best.check.coverage;
   piece.attempts = attempts;
   piece.stale = false;
+  piece.staleWhy = undefined;
+  piece.voicedWith = `${voice}\n${text}`;
   chapterResult = null;
   renderChapterPieces();
 }
@@ -8453,12 +8492,22 @@ async function runChapter(onlyMarked = false): Promise<void> {
   if (!onlyMarked) await offerProjectBeforeLongRun();
   if (chapterPieces.length === 0 && !splitChapterIntoPieces()) return;
   if (!(await ensureDramaLoaded())) return;
-  const todo = chapterPieces.filter((p) =>
+  markChangedChapterPieces();
+  let todo = chapterPieces.filter((p) =>
     onlyMarked ? p.status === "bad" || p.status === "warn" || p.stale : !p.result || p.stale,
   );
   if (todo.length === 0) {
-    showToast(t("All pieces are voiced"));
-    return;
+    if (onlyMarked) {
+      showToast(t("All pieces are voiced"));
+      renderChapterPieces();
+      return;
+    }
+    const answer = await askChoice(t("All pieces are voiced"), t("Voice the whole chapter again? The present takes will be replaced."), [
+      { value: "cancel", label: t("Cancel") },
+      { value: "all", label: t("Voice everything again"), primary: true },
+    ]);
+    if (answer !== "all") return;
+    todo = [...chapterPieces];
   }
   chapterRunning = true;
   chapterStopRequested = false;
@@ -8593,6 +8642,7 @@ function initChapter(): void {
   }
   renderChapterCharacterTools();
   el("#chapter-use-characters").addEventListener("change", renderChapterCharacterTools);
+  for (const id of ["#chapter-voice", "#chapter-narrator-style"]) el(id).addEventListener("change", chapterVoicesChanged);
   el("#chapter-markup-book").addEventListener("click", () => markupSceneBookText(CHAPTER_TEXT_TARGET));
   el("#chapter-markup-undo").addEventListener("click", () => undoSceneMarkup(CHAPTER_TEXT_TARGET));
   el("#chapter-goto-characters").addEventListener("click", () => switchMode("multi"));
@@ -8619,10 +8669,12 @@ function initChapter(): void {
   list.addEventListener("input", (event) => {
     const area = event.target as HTMLTextAreaElement;
     const piece = chapterPieces.find((p) => p.id === area.closest<HTMLElement>(".chapter-piece")?.dataset.id);
-    if (!piece) return;
+    // The speaker list sends "input" too: only the text field holds the text.
+    if (!piece || area.dataset.field !== "text") return;
     piece.text = area.value;
     if (piece.result && !piece.stale) {
       piece.stale = true;
+      piece.staleWhy = "text";
       const row = area.closest<HTMLElement>(".chapter-piece")!;
       row.classList.add("stale");
     }
@@ -8635,7 +8687,10 @@ function initChapter(): void {
         piece.character = Number(select.value);
         piece.kind = piece.character >= 0 ? "dialogue" : "narration";
         // The take was read by someone else.
-        if (piece.result) piece.stale = true;
+        if (piece.result) {
+          piece.stale = true;
+          piece.staleWhy = "voice";
+        }
         chapterResult = null;
       }
     }
