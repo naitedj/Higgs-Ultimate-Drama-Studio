@@ -95,6 +95,7 @@ import {
   markupBookText,
   setScriptLineSpeaker,
   sceneParts,
+  mixedSceneParts,
   sceneText,
   shortHash,
   dramaOptionsFromRequest,
@@ -6231,22 +6232,37 @@ function renderScenePreview(): void {
   if (replies.length > 0) {
     const chars = replies.reduce((sum, r) => sum + r.text.length, 0);
     const scenePartsCount = sceneParts(replies).length;
-    parts.unshift(`<p class="input-hint">${replies.length} ${escapeHtml(t("replies"))} · ${chars} ${escapeHtml(t("characters of text"))}${dramaScene.mode === "scene" && scenePartsCount > 1 ? ` · ${escapeHtml(t("parts"))}: ${scenePartsCount}` : ""}</p>`);
+    let partsInfo = dramaScene.mode === "scene" && scenePartsCount > 1 ? ` · ${escapeHtml(t("parts"))}: ${scenePartsCount}` : "";
+    if (dramaScene.mode === "mixed") {
+      const narrator = findNarrator(dramaScene.characters);
+      if (narrator < 0) {
+        partsInfo = ` · <span class="warn-text">${escapeHtml(t("No narrator in the list: name a character Рассказчик, Рассказчица or Автор"))}</span>`;
+      } else {
+        const mixed = mixedSceneParts(replies, narrator);
+        const narration = mixed.filter((p) => p.kind === "narration").length;
+        partsInfo = ` · ${escapeHtml(t("parts"))}: ${mixed.length} (${escapeHtml(t("narrator alone"))}: ${narration}, ${escapeHtml(t("dialogue"))}: ${mixed.length - narration})`;
+      }
+    }
+    parts.unshift(`<p class="input-hint">${replies.length} ${escapeHtml(t("replies"))} · ${chars} ${escapeHtml(t("characters of text"))}${partsInfo}</p>`);
   }
   preview.innerHTML = parts.join("");
 }
 
 function renderSceneMode(): void {
   const lines = dramaScene.mode === "lines";
-  el("#scene-mode-scene").classList.toggle("active", !lines);
+  const mixed = dramaScene.mode === "mixed";
+  el("#scene-mode-scene").classList.toggle("active", dramaScene.mode === "scene");
   el("#scene-mode-lines").classList.toggle("active", lines);
-  el("#scene-pause-row").classList.toggle("hidden", !lines);
+  el("#scene-mode-mixed").classList.toggle("active", mixed);
+  el("#scene-pause-row").classList.toggle("hidden", !lines && !mixed);
   el<HTMLInputElement>("#scene-pause").value = String(dramaScene.pause);
   el<HTMLInputElement>("#scene-level").checked = dramaScene.level;
   el("#scene-val-pause").textContent = dramaScene.pause.toFixed(2);
   setText("#scene-mode-hint", lines
     ? t("Each reply on its own, with its character's voice: every line gets a player and a Redo button, and the lines are joined with the pause.")
-    : t("The whole scene in one request: intonation and pauses between replies sound more natural. A long scene is split into parts of about 45 s."));
+    : mixed
+      ? t("Long narrator paragraphs are read on their own in the narrator's voice (it keeps the voice better); the dialogue, with the short author's words between replies, goes in one request (livelier). The parts are joined with the pause.")
+      : t("The whole scene in one request: intonation and pauses between replies sound more natural. A long scene is split into parts of about 45 s."));
 }
 
 function renderDramaScene(): void {
@@ -6437,6 +6453,35 @@ async function generateDramaScene(
     return showJoinedSceneLines();
   }
 
+  if (payload.sceneMode === "mixed") {
+    const narrator = findNarrator(characters);
+    if (narrator < 0) throw new Error(t("No narrator in the list: name a character Рассказчик, Рассказчица or Автор"));
+    sceneLines = [];
+    renderSceneLineResults();
+    dramaPartLabel = `${t("Preparing the voices…")} `;
+    const sharedVoice = await prepareSceneVoice(characters);
+    const parts = mixedSceneParts(replies, narrator);
+    const options = { ...job.options, max_seconds: DRAMA_MAX_SECONDS_LIMIT };
+    const results: DramaGenerationResult[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      dramaPartLabel = `${t("Part")} ${i + 1}/${parts.length} (${part.kind === "narration" ? t("narrator") : t("dialogue")}) · `;
+      setProgress("#gen-progress-bar", i, parts.length);
+      const request = part.kind === "narration"
+        ? sceneLineRequest({ ...part.reply, text: part.text }, characters)
+        : { text: sceneText(part.replies, characters), voice: sharedVoice };
+      const result = await dramaGenerate({ request: { ...request, options, streamPlayback: false } });
+      setDramaLastSeed(result.seed);
+      if (result.stop === "max_seconds") {
+        window.setTimeout(() => showToast(t("A part hit the 95 s limit: its end may be missing. Split long replies."), "warning"), 2500);
+      }
+      results.push(await levelSceneTake(autoShortenPauses(result), level));
+    }
+    setProgress("#gen-progress-bar", 1, 1);
+    reportAutoShortened();
+    return results.length === 1 ? results[0] : concatenateWavResults(results, payload.pause);
+  }
+
   // Whole scene: one shared voice file, the text in parts under the 95 s limit.
   sceneLines = [];
   renderSceneLineResults();
@@ -6548,6 +6593,12 @@ function initDramaScene(): void {
   });
   el("#scene-mode-lines").addEventListener("click", () => {
     dramaScene.mode = "lines";
+    persistDramaScene();
+    renderSceneMode();
+    renderScenePreview();
+  });
+  el("#scene-mode-mixed").addEventListener("click", () => {
+    dramaScene.mode = "mixed";
     persistDramaScene();
     renderSceneMode();
     renderScenePreview();
@@ -11079,6 +11130,7 @@ async function main(): Promise<void> {
   if (import.meta.env.DEV) {
     (window as unknown as { __dramaStudioTest: unknown }).__dramaStudioTest = {
       addMontageClip,
+      lastResult: () => lastResult,
       confirmDramaVram: () => confirmDramaVram(dramaPathsFromInputs().modelPath, dramaPathsFromInputs().device),
       montageResult: () => montageResult,
       applyGalleryReference,

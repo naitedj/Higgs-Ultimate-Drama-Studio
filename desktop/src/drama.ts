@@ -279,13 +279,13 @@ export function characterStyleHint(character: { style?: string } | undefined): s
   return tag ? `${tag} ` : "";
 }
 
-export type DramaSceneMode = "scene" | "lines";
+export type DramaSceneMode = "scene" | "lines" | "mixed";
 
 export type DramaScene = {
   characters: DramaCharacter[];
   script: string;
   mode: DramaSceneMode;
-  /** Seconds of silence between lines in line-by-line mode. */
+  /** Seconds of silence between lines (line by line) or parts (mixed). */
   pause: number;
   /** Bring every line (or part) to the same loudness. */
   level: boolean;
@@ -321,7 +321,7 @@ export function loadDramaScene(): DramaScene {
             style: typeof c.style === "string" ? c.style : "",
           })),
         script: typeof raw.script === "string" ? raw.script : "",
-        mode: raw.mode === "lines" ? "lines" : "scene",
+        mode: raw.mode === "lines" || raw.mode === "mixed" ? raw.mode : "scene",
         pause: Number.isFinite(raw.pause) ? Math.min(1.5, Math.max(0, raw.pause)) : 0.35,
         level: typeof raw.level === "boolean" ? raw.level : true,
       };
@@ -467,6 +467,52 @@ export function sceneParts(replies: SceneReply[], maxChars = DRAMA_SCENE_PART_CH
     size += reply.text.length;
   }
   if (current.length > 0) parts.push(current);
+  return parts;
+}
+
+/** A narrator reply this long (characters) is voiced on its own in the mixed mode. */
+export const DRAMA_MIXED_NARRATION_CHARS = 160;
+
+export type MixedScenePart =
+  | { kind: "narration"; text: string; reply: SceneReply }
+  | { kind: "dialogue"; replies: SceneReply[] };
+
+/**
+ * The mixed mode: long narrator paragraphs go on their own with the narrator's
+ * own voice (it keeps the voice better), the dialogue with the short author's
+ * words between replies goes in scene requests (livelier). Consecutive long
+ * narrator replies are read together, cut at sentence ends under `maxChars`.
+ */
+export function mixedSceneParts(
+  replies: SceneReply[],
+  narrator: number,
+  longChars = DRAMA_MIXED_NARRATION_CHARS,
+  maxChars = DRAMA_SCENE_PART_CHARS,
+): MixedScenePart[] {
+  const parts: MixedScenePart[] = [];
+  let dialogue: SceneReply[] = [];
+  let narration: SceneReply[] = [];
+  const flushDialogue = () => {
+    for (const part of sceneParts(dialogue, maxChars)) parts.push({ kind: "dialogue", replies: part });
+    dialogue = [];
+  };
+  const flushNarration = () => {
+    if (narration.length === 0) return;
+    const text = narration.map((r) => r.text).join(" ");
+    for (const piece of packSentences(text, maxChars)) parts.push({ kind: "narration", text: piece, reply: narration[0] });
+    narration = [];
+  };
+  for (const reply of replies) {
+    if (narrator >= 0 && reply.character === narrator && reply.text.length >= longChars) {
+      flushDialogue();
+      narration.push(reply);
+    } else {
+      flushNarration();
+      dialogue.push(reply);
+    }
+  }
+  flushNarration();
+  flushDialogue();
   return parts;
 }
 

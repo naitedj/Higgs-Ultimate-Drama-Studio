@@ -249,7 +249,7 @@ export type GenerationJob = {
         kind: "scene";
         characters: Array<{ id: string; name: string; voice: string; description: string; style?: string }>;
         script: string;
-        sceneMode: "scene" | "lines";
+        sceneMode: "scene" | "lines" | "mixed";
         pause: number;
         level?: boolean;
       };
