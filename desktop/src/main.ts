@@ -6343,7 +6343,10 @@ function renderSceneCharacters(): void {
     row.innerHTML = `
       <span class="scene-speaker-badge" style="--speaker-color:${sceneColor(index)}" title="${escapeHtml(t("Speaker number in Drama 3"))}">${index}</span>
       <input class="text-input" data-field="name" type="text" placeholder="${escapeHtml(t("Name"))}" />
-      <select class="select-input" data-field="voice">${sceneVoiceOptionsHtml(character.voice)}</select>
+      <span class="voice-with-sample">
+        <select class="select-input" data-field="voice">${sceneVoiceOptionsHtml(character.voice)}</select>
+        <button class="icon-button" data-action="sample" type="button" title="${escapeHtml(t("Hear this voice: one phrase"))}">🔊</button>
+      </span>
       <input class="text-input" data-field="description" type="text" spellcheck="false"
         placeholder="${escapeHtml(t("Voice description in English, e.g. calm elderly man, low voice"))}" />
       <span class="style-with-emotions">
@@ -10484,6 +10487,67 @@ function dramaGenerate(args: { request: { text: string } & Record<string, unknow
   });
 }
 
+// ─── Voice sample: one phrase in a voice, to compare voices without voicing one's own text ───
+
+const VOICE_SAMPLE_TEXT = "Здравствуйте. Так звучит этот голос: спокойно, ясно и по-доброму. Ну что, слушаем дальше?";
+/** Voice (and description for "none") → the sample, made once per session. */
+const voiceSamples = new Map<string, string>();
+const voiceSamplePlayer = new Audio();
+let voiceSampleBusy = false;
+
+async function playVoiceSample(voice: string, description: string, button: HTMLButtonElement): Promise<void> {
+  const key = `${voice}|${voice === "none" ? description.trim() : ""}`;
+  voiceSamplePlayer.pause();
+  const ready = voiceSamples.get(key);
+  if (ready) {
+    voiceSamplePlayer.src = ready;
+    void voiceSamplePlayer.play();
+    return;
+  }
+  if (voiceSampleBusy || isGenerating || chapterRunning || subsRunning || studioBusy || bookRunning) {
+    showToast(t("Wait until the present voicing ends"), "warning");
+    return;
+  }
+  voiceSampleBusy = true;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "…";
+  try {
+    if (!(await ensureDramaLoaded())) return;
+    const loaded = new Set(dramaStatus.modelInfo?.voices.map((v) => v.name) || []);
+    if (voice !== "none" && !loaded.has(voice)) throw new Error(`${t("Voice not found")}: ${voice}`);
+    const hint = voice === "none" ? toDramaTag(description) : "";
+    const options = dramaRequestOptions({ ...readDramaOptionsFromUi(), seed: "" });
+    const result = await dramaGenerate({ request: { text: `${hint ? `${hint} ` : ""}${VOICE_SAMPLE_TEXT}`, voice, options, streamPlayback: false } });
+    const url = URL.createObjectURL(await base64ToBlobAsync(autoShortenPauses(result).wavBase64, "audio/wav"));
+    voiceSamples.set(key, url);
+    voiceSamplePlayer.src = url;
+    void voiceSamplePlayer.play();
+  } catch (e) {
+    showToast(`${t("Could not make the sample")}: ${e}`, "error");
+  } finally {
+    voiceSampleBusy = false;
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+function initVoiceSamples(): void {
+  el<HTMLButtonElement>("#drama-voice-sample").addEventListener("click", (event) => {
+    void playVoiceSample(el<HTMLSelectElement>("#drama-voice").value || "none", "", event.currentTarget as HTMLButtonElement);
+  });
+  el<HTMLButtonElement>("#chapter-voice-sample").addEventListener("click", (event) => {
+    event.preventDefault();
+    void playVoiceSample(el<HTMLSelectElement>("#chapter-voice").value || "none", "", event.currentTarget as HTMLButtonElement);
+  });
+  el("#scene-characters").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action="sample"]');
+    if (!button) return;
+    const character = dramaScene.characters[Number(button.closest<HTMLElement>(".scene-character-row")?.dataset.index)];
+    if (character) void playVoiceSample(character.voice, character.description, button);
+  });
+}
+
 function updateDictionaryButtons(): void {
   const count = dictionary.filter((e) => e.from.trim()).length;
   for (const button of document.querySelectorAll<HTMLButtonElement>(".dictionary-open")) {
@@ -11766,6 +11830,7 @@ async function main(): Promise<void> {
   initChapter();
   initBook();
   initFoundVoices();
+  initVoiceSamples();
   initVoiceStudio();
   initSubtitles();
   initVideo();
