@@ -870,6 +870,16 @@
               <span id="chapter-status" class="api-status-text"></span>
             </div>
             <p class="input-hint">Paste a chapter: it is cut into pieces (paragraphs, long ones at sentence ends) that are voiced one after another and checked. A bad piece is redone with another seed automatically. Pieces are kept until the program is closed: save the joined chapter to a file.</p>
+            <div class="book-row">
+              <span class="field-label">Book</span>
+              <select id="book-chapter" class="select-input book-select"></select>
+              <button id="book-add" class="compact-button" type="button">+ Chapter</button>
+              <button id="book-rename" class="compact-button" type="button">✎ Rename</button>
+              <button id="book-remove" class="compact-button" type="button">✕ Remove</button>
+              <button id="book-split" class="compact-button" type="button" title="Paste the whole book into the text box: it is cut into chapters at headings like «Глава 1», «Пролог», «Эпилог»">📖 Split the book into chapters</button>
+              <button id="book-run" class="compact-button primary" type="button">▶ Voice the book</button>
+              <span id="book-hint" class="api-status-text"></span>
+            </div>
             <div id="chapter-character-tools" class="chapter-character-tools hidden">
               <div class="scene-script-tools">
                 <button id="chapter-markup-book" class="compact-button primary" type="button" title="Paste a book passage as it is, with dashes, and the program sets who says what">✨ Mark up book text</button>

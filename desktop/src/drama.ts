@@ -830,3 +830,20 @@ export function speakerOfLine(line: string, characters: DramaCharacter[]): { cha
   const index = prefix ? characterIndexForPrefix(prefix.name, characters) : -1;
   return index >= 0 && prefix ? { character: index, text: prefix.text.trim() } : { character: -1, text: line.trim() };
 }
+
+// ─── Book → chapters ────────────────────────────────────────────────────────
+
+/** A heading line: "Глава 1", "ГЛАВА ПЕРВАЯ. Встреча", "Пролог", "Chapter 3"… */
+const BOOK_HEADING = /^\s*(?:глава|часть|пролог|эпилог|послесловие|предисловие|интерлюдия|chapter|part|prologue|epilogue)(?:[\s.:–—-]+[\p{L}\d.,:!?«»"–—-]+){0,8}\s*$/iu;
+
+/** A whole book cut at its chapter headings; the text before the first heading is its own chapter. */
+export function splitBookText(text: string, firstTitle = "Начало"): Array<{ title: string; text: string }> {
+  const chapters: Array<{ title: string; lines: string[] }> = [{ title: "", lines: [] }];
+  for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+    if (line.trim().length <= 80 && BOOK_HEADING.test(line)) chapters.push({ title: line.trim(), lines: [] });
+    else chapters[chapters.length - 1].lines.push(line);
+  }
+  return chapters
+    .map((c) => ({ title: c.title || firstTitle, text: c.lines.join("\n").trim() }))
+    .filter((c) => c.text);
+}

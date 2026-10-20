@@ -2433,6 +2433,8 @@ input[type="range"]::-moz-range-thumb {
 .chapter-piece-speaker-select { border-color: var(--speaker-color); color: var(--speaker-color); font-size: 12px; font-weight: 700; max-width: 220px; min-height: 26px; padding: 2px 6px; }
 .scene-character-row { grid-template-columns: 28px minmax(110px, 0.7fr) minmax(140px, 0.9fr) minmax(150px, 1.2fr) minmax(150px, 1fr) auto; }
 .chapter-style-input { min-width: 230px; }
+.book-row { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+.book-select { min-width: 260px; max-width: 420px; }
 .style-with-emotions { align-items: center; display: flex; gap: 4px; min-width: 0; }
 .style-with-emotions .text-input { flex: 1; min-width: 0; }
 .emotion-panel { max-width: 980px; width: min(980px, 94vw); max-height: 92vh; display: flex; flex-direction: column; }

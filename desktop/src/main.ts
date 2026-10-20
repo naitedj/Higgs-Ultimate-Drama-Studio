@@ -96,6 +96,7 @@ import {
   setScriptLineSpeaker,
   sceneParts,
   mixedSceneParts,
+  splitBookText,
   sceneText,
   shortHash,
   dramaOptionsFromRequest,
@@ -8325,6 +8326,13 @@ let chapterCharacters: DramaCharacter[] = [];
 let chapterRunning = false;
 let chapterStopRequested = false;
 let chapterResult: GenerationResult | null = null;
+
+/** Chapters of the book (in a project). The active one lives in the Chapter tab; the others only on disk. */
+type BookChapter = { id: string; title: string; text: string; characters: DramaCharacter[]; pieces: SavedPiece[]; joined: string | null };
+let bookChapters: BookChapter[] = [];
+let bookActive = 0;
+let bookRunning = false;
+let bookStopRequested = false;
 let chapterAudioUrl = "";
 let chapterWave: WavePanel | null = null;
 const chapterPiecePlayer = new Audio();
@@ -8540,6 +8548,7 @@ function renderChapterPieces(): void {
   el<HTMLButtonElement>("#chapter-run").classList.toggle("hidden", chapterRunning);
   el<HTMLButtonElement>("#chapter-stop").classList.toggle("hidden", !chapterRunning);
   el<HTMLButtonElement>("#chapter-split").disabled = chapterRunning;
+  if (document.querySelector("#book-chapter")) renderBook();
   const seconds = chapterPieces.reduce((sum, p) => sum + (p.result?.seconds || 0), 0);
   el("#chapter-status").textContent = chapterPieces.length > 0
     ? `${done}/${chapterPieces.length} ${t("pieces")} · ${formatTime(seconds)}${marked > 0 ? ` · ${t("to check")}: ${marked}` : ""}`
@@ -8672,9 +8681,9 @@ async function voiceChapterPiece(piece: ChapterPieceState): Promise<void> {
 }
 
 /** Voices the pieces that need it (all waiting ones, or the marked ones), in order. */
-async function runChapter(onlyMarked = false): Promise<void> {
+async function runChapter(onlyMarked = false, auto = false): Promise<void> {
   if (chapterRunning) return;
-  if (!onlyMarked) await offerProjectBeforeLongRun();
+  if (!onlyMarked && !auto) await offerProjectBeforeLongRun();
   if (chapterPieces.length === 0 && !splitChapterIntoPieces()) return;
   if (!(await ensureDramaLoaded())) return;
   markChangedChapterPieces();
@@ -8682,6 +8691,7 @@ async function runChapter(onlyMarked = false): Promise<void> {
     onlyMarked ? p.status === "bad" || p.status === "warn" || p.stale : !p.result || p.stale,
   );
   if (todo.length === 0) {
+    if (auto) return;
     if (onlyMarked) {
       showToast(t("All pieces are voiced"));
       renderChapterPieces();
@@ -8933,6 +8943,224 @@ function initChapter(): void {
   el("#chapter-to-montage").addEventListener("click", () => {
     if (chapterResult) addMontageClip(t("Chapter"), chapterResult, "chapter");
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Book: the chapters of a project. The active chapter is the Chapter tab; the
+// others are kept on disk only (a book does not fit in memory). "Voice the book"
+// cuts, voices (with checks) and joins every chapter in turn.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function newBookChapter(title: string, text = ""): BookChapter {
+  return { id: nextId("ch"), title, text, characters: [], pieces: [], joined: null };
+}
+
+/** There is always a chapter: the one in the Chapter tab. */
+function ensureBook(): void {
+  if (bookChapters.length > 0) return;
+  bookChapters = [newBookChapter(`${t("Chapter")} 1`, el<HTMLTextAreaElement>("#chapter-text").value)];
+  bookActive = 0;
+}
+
+/** Saves now, after a save already running. */
+async function saveProjectNow(): Promise<void> {
+  while (projectSaving) await new Promise((r) => setTimeout(r, 100));
+  await saveProject();
+}
+
+function bookChapterInfo(index: number): { done: number; total: number; seconds: number } {
+  if (index === bookActive) {
+    return {
+      done: chapterPieces.filter((p) => p.result).length,
+      total: chapterPieces.length,
+      seconds: chapterPieces.reduce((sum, p) => sum + (p.result?.seconds || 0), 0),
+    };
+  }
+  const pieces = bookChapters[index].pieces;
+  return {
+    done: pieces.filter((p) => p.take).length,
+    total: pieces.length,
+    seconds: pieces.reduce((sum, p) => sum + (p.take?.seconds || 0), 0),
+  };
+}
+
+function renderBook(): void {
+  ensureBook();
+  const select = el<HTMLSelectElement>("#book-chapter");
+  select.innerHTML = bookChapters.map((chapter, index) => {
+    const info = bookChapterInfo(index);
+    const state = info.total === 0 ? t("not cut") : `${info.done}/${info.total}${info.done > 0 ? ` · ${formatTime(info.seconds)}` : ""}`;
+    return `<option value="${index}">${index + 1}. ${escapeHtml(chapter.title)} — ${escapeHtml(state)}</option>`;
+  }).join("");
+  select.value = String(bookActive);
+  const inProject = Boolean(currentProject);
+  const busy = chapterRunning || bookRunning;
+  select.disabled = !inProject || busy;
+  for (const id of ["#book-add", "#book-rename", "#book-split"]) el<HTMLButtonElement>(id).disabled = !inProject || busy;
+  el<HTMLButtonElement>("#book-remove").disabled = !inProject || busy || bookChapters.length < 2;
+  el<HTMLButtonElement>("#book-run").disabled = !inProject || (chapterRunning && !bookRunning);
+  el<HTMLButtonElement>("#book-run").textContent = bookRunning ? t("⏹ Stop the book") : t("▶ Voice the book");
+  el("#book-hint").textContent = inProject
+    ? `${t("Chapters in the book")}: ${bookChapters.length}`
+    : t("A book of several chapters works in a project: create or open one on the left.");
+}
+
+/** Makes chapter `index` the one in the Chapter tab; the present one is saved to disk first. */
+async function activateBookChapter(index: number): Promise<boolean> {
+  if (!currentProject || index < 0 || index >= bookChapters.length) return false;
+  if (index === bookActive) return true;
+  await saveProjectNow();
+  const chapter = bookChapters[index];
+  projectLoading = true;
+  try {
+    bookActive = index;
+    el<HTMLTextAreaElement>("#chapter-text").value = chapter.text;
+    chapterCharacters = chapter.characters || [];
+    const missing = await loadSavedChapter(chapter.pieces, chapter.joined);
+    if (missing > 0) showToast(`${t("Audio files not found")}: ${missing}`, "warning");
+  } finally {
+    projectLoading = false;
+  }
+  renderChapterCharacterTools();
+  renderBook();
+  scheduleProjectSave();
+  return true;
+}
+
+async function addBookChapter(): Promise<void> {
+  if (!currentProject) return;
+  await saveProjectNow();
+  bookChapters.push(newBookChapter(`${t("Chapter")} ${bookChapters.length + 1}`));
+  await activateBookChapter(bookChapters.length - 1);
+  el<HTMLTextAreaElement>("#chapter-text").focus();
+}
+
+async function renameBookChapter(): Promise<void> {
+  const chapter = bookChapters[bookActive];
+  const name = await askText(t("Rename the chapter"), t("Chapter title:"), chapter.title);
+  if (!name) return;
+  chapter.title = name;
+  renderBook();
+  scheduleProjectSave();
+}
+
+async function removeBookChapter(): Promise<void> {
+  if (bookChapters.length < 2) return;
+  const chapter = bookChapters[bookActive];
+  const answer = await askChoice(t("Remove the chapter"), `${t("Remove")} «${chapter.title}» ${t("from the book, with its voiced pieces?")}`, [
+    { value: "cancel", label: t("Cancel") },
+    { value: "remove", label: t("Remove"), primary: true },
+  ]);
+  if (answer !== "remove") return;
+  const removed = bookActive;
+  const next = removed > 0 ? removed - 1 : 0;
+  const target = bookChapters[removed === 0 ? 1 : next];
+  bookChapters.splice(removed, 1);
+  // The removed chapter is not saved back: load its neighbour directly.
+  bookActive = bookChapters.indexOf(target);
+  projectLoading = true;
+  try {
+    el<HTMLTextAreaElement>("#chapter-text").value = target.text;
+    chapterCharacters = target.characters || [];
+    await loadSavedChapter(target.pieces, target.joined);
+  } finally {
+    projectLoading = false;
+  }
+  renderChapterCharacterTools();
+  renderBook();
+  await saveProjectNow();
+}
+
+/** The whole book pasted into the chapter text → one chapter per heading. */
+async function splitBookIntoChapters(): Promise<void> {
+  const parts = splitBookText(el<HTMLTextAreaElement>("#chapter-text").value, t("Beginning"));
+  if (parts.length < 2) {
+    showToast(t("No chapter headings found: lines like «Глава 1», «Пролог», «Эпилог»"), "warning");
+    return;
+  }
+  const list = parts.slice(0, 12).map((p) => p.title).join(", ") + (parts.length > 12 ? "…" : "");
+  const answer = await askChoice(
+    t("Split the book into chapters"),
+    `${t("Chapters found")}: ${parts.length} (${list}). ${t("The text in the box becomes the first of them, the others are added after it.")}`,
+    [
+      { value: "cancel", label: t("Cancel") },
+      { value: "split", label: t("Split"), primary: true },
+    ],
+  );
+  if (answer !== "split") return;
+  const active = bookChapters[bookActive];
+  active.title = parts[0].title;
+  el<HTMLTextAreaElement>("#chapter-text").value = parts[0].text;
+  chapterPieces = [];
+  chapterResult = null;
+  el("#chapter-output").classList.add("hidden");
+  renderChapterPieces();
+  saveChapterSettings();
+  bookChapters.splice(bookActive + 1, 0, ...parts.slice(1).map((p) => newBookChapter(p.title, p.text)));
+  renderBook();
+  await saveProjectNow();
+  showToast(`${t("Chapters in the book")}: ${bookChapters.length}`);
+}
+
+/** Every chapter in turn: cut if needed, voice what is missing (with checks), join. */
+async function runBook(): Promise<void> {
+  if (bookRunning) {
+    bookStopRequested = true;
+    await stopChapter();
+    return;
+  }
+  if (!currentProject) {
+    await offerProjectBeforeLongRun();
+    if (!currentProject) return;
+  }
+  bookRunning = true;
+  bookStopRequested = false;
+  renderBook();
+  let voiced = 0;
+  let toCheck = 0;
+  try {
+    for (let i = 0; i < bookChapters.length; i++) {
+      if (bookStopRequested) break;
+      await activateBookChapter(i);
+      if (chapterPieces.length === 0) {
+        if (!el<HTMLTextAreaElement>("#chapter-text").value.trim()) continue;
+        if (!splitChapterIntoPieces()) break;
+      }
+      // Without the model the book stops (and does not ask again for every chapter).
+      if (!(await ensureDramaLoaded())) {
+        bookStopRequested = true;
+        break;
+      }
+      el("#book-hint").textContent = `${t("Voicing chapter")} ${i + 1}/${bookChapters.length}: ${bookChapters[i].title}`;
+      await runChapter(false, true);
+      if (bookStopRequested || chapterStopRequested) break;
+      if (chapterPieces.every((p) => p.result)) {
+        if (!chapterResult) await joinChapter();
+        voiced += 1;
+      }
+      toCheck += chapterPieces.filter((p) => p.status === "bad" || p.status === "warn").length;
+      await saveProjectNow();
+      renderBook();
+    }
+  } finally {
+    bookRunning = false;
+    renderBook();
+  }
+  if (bookStopRequested || chapterStopRequested) showToast(t("The book stopped: press ▶ Voice the book to go on"), "warning");
+  else if (toCheck > 0) showToast(`${t("Book voiced")}: ${voiced} · ${t("pieces to check")}: ${toCheck}`, "warning");
+  else showToast(`${t("Book voiced")}: ${voiced}`);
+}
+
+function initBook(): void {
+  el<HTMLSelectElement>("#book-chapter").addEventListener("change", (event) => {
+    void activateBookChapter(Number((event.target as HTMLSelectElement).value));
+  });
+  el("#book-add").addEventListener("click", () => void addBookChapter());
+  el("#book-rename").addEventListener("click", () => void renameBookChapter());
+  el("#book-remove").addEventListener("click", () => void removeBookChapter());
+  el("#book-split").addEventListener("click", () => void splitBookIntoChapters());
+  el("#book-run").addEventListener("click", () => void runBook());
+  renderBook();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -10049,6 +10277,8 @@ type ProjectFile = {
     normalize: boolean;
     speed: number;
   };
+  /** All chapters of the book; `chapter` above is the active one (kept for older versions). */
+  book?: { chapters: BookChapter[]; active: number };
   subtitles?: {
     settings: SubsSettings;
     characters: DramaCharacter[];
@@ -10123,7 +10353,21 @@ async function saveProject(): Promise<void> {
       const { result, ...rest } = piece;
       pieces.push({ ...rest, status: rest.status === "generating" ? "waiting" : rest.status, take: result ? await takeOf(`chapter_${piece.id}.wav`, result) : null });
     }
-    const chapterJoined = chapterResult ? (await takeOf("chapter_joined.wav", chapterResult)).file : null;
+    ensureBook();
+    const activeChapter = bookChapters[bookActive];
+    const chapterJoined = chapterResult ? (await takeOf(`chapter_joined_${activeChapter.id}.wav`, chapterResult)).file : null;
+    bookChapters[bookActive] = {
+      ...activeChapter,
+      text: el<HTMLTextAreaElement>("#chapter-text").value,
+      characters: chapterCharacters,
+      pieces,
+      joined: chapterJoined,
+    };
+    bookChapters.forEach((chapter, index) => {
+      if (index === bookActive) return;
+      for (const piece of chapter.pieces) if (piece.take) keep.push(piece.take.file);
+      if (chapter.joined) keep.push(chapter.joined);
+    });
 
     const lines: ProjectFile["scene"]["lines"] = [];
     for (let i = 0; i < sceneLines.length; i++) {
@@ -10157,6 +10401,7 @@ async function saveProject(): Promise<void> {
         speed: parseFloat(el<HTMLInputElement>("#montage-speed").value) || 1,
       },
       subtitles: { settings: readSubsSettings(), characters: subsCharacters, cues },
+      book: { chapters: bookChapters, active: bookActive },
     };
     await invoke("save_text_file", { path: `${currentProject.dir}\\project.json`, content: JSON.stringify(file, null, 1) });
     await invoke("project_cleanup_audio", { dir: currentProject.dir, keep });
@@ -10172,6 +10417,38 @@ async function saveProject(): Promise<void> {
       scheduleProjectSave(300);
     }
   }
+}
+
+/** Puts saved pieces (and the joined chapter) of a project into the Chapter tab; returns how many files are missing. */
+async function loadSavedChapter(saved: SavedPiece[], joinedFile: string | null): Promise<number> {
+  let missing = 0;
+  chapterPieces = [];
+  for (const piece of saved) {
+    const { take, ...rest } = piece;
+    let result: DramaGenerationResult | null = null;
+    if (take) {
+      try {
+        result = dramaTake(take, await readProjectTake(take, {}));
+        projectWritten.set(take.file, result.wavBase64);
+      } catch {
+        missing += 1;
+      }
+    }
+    chapterPieces.push({ ...rest, result, status: result ? rest.status : "waiting" });
+  }
+  chapterResult = null;
+  el("#chapter-output").classList.add("hidden");
+  if (joinedFile) {
+    try {
+      const joined = await readProjectTake({ file: joinedFile }, {});
+      projectWritten.set(joinedFile, joined.wavBase64);
+      showChapterResult(joined);
+    } catch {
+      missing += 1;
+    }
+  }
+  renderChapterPieces();
+  return missing;
 }
 
 async function readProjectTake<T extends object>(take: SavedTake, extra: T): Promise<GenerationResult & T> {
@@ -10214,31 +10491,15 @@ async function openProject(dir: string, quiet = false): Promise<boolean> {
     loadChapterSettings(file.chapter.settings);
     renderChapterCharacterTools();
     chapterCharacters = file.chapter.characters || [];
-    chapterPieces = [];
-    for (const saved of file.chapter.pieces || []) {
-      const { take, ...rest } = saved;
-      let result: DramaGenerationResult | null = null;
-      if (take) {
-        try {
-          result = dramaTake(take, await readProjectTake(take, {}));
-          projectWritten.set(take.file, result.wavBase64);
-        } catch {
-          missing += 1;
-        }
-      }
-      chapterPieces.push({ ...rest, result, status: result ? rest.status : "waiting" });
+    missing += await loadSavedChapter(file.chapter.pieces || [], file.chapter.joined);
+    if (file.book?.chapters?.length) {
+      bookChapters = file.book.chapters;
+      bookActive = Math.min(bookChapters.length - 1, Math.max(0, file.book.active || 0));
+    } else {
+      bookChapters = [];
+      ensureBook();
     }
-    chapterResult = null;
-    el("#chapter-output").classList.add("hidden");
-    if (file.chapter.joined) {
-      try {
-        const joined = await readProjectTake({ file: file.chapter.joined }, {});
-        projectWritten.set(file.chapter.joined, joined.wavBase64);
-        showChapterResult(joined);
-      } catch {
-        missing += 1;
-      }
-    }
+    renderBook();
     renderChapterPieces();
 
     // Scene
@@ -10330,12 +10591,16 @@ async function startProject(dir: string, name: string): Promise<void> {
 
 /** Clears the Chapter, the scene's script and lines, and the Montage (characters stay). */
 function clearWorkForNewProject(): void {
+  bookChapters = [];
+  bookActive = 0;
   chapterPieces = [];
   chapterCharacters = [];
   chapterResult = null;
   el<HTMLTextAreaElement>("#chapter-text").value = "";
   el("#chapter-output").classList.add("hidden");
   renderChapterPieces();
+  ensureBook();
+  renderBook();
   dramaScene.script = "";
   persistDramaScene();
   renderDramaScene();
@@ -11175,6 +11440,7 @@ async function main(): Promise<void> {
   initSpeakerExtras();
   initVoiceMixAndLock();
   initChapter();
+  initBook();
   initVoiceStudio();
   initSubtitles();
   initVideo();
