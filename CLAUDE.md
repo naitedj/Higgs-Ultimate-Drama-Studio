@@ -155,6 +155,7 @@
 |---|---|---|
 | Движок Drama 3 | `src-tauri/src/speech_engine.rs`, команды `drama_*` в `lib.rs` | libloading speech.dll (C API 3.3), модель, синтез с потоком, отмена, голоса (`voice_make_from`/`voice_add`), журнал |
 | Переключатель движков, панель Drama 3, настройки, ремарки | `src/drama.ts`, `src/main.ts` (раздел «Drama 3 engine») | top_k 4097 по умолчанию; seed пусто = случайный, «Закрепить»; кнопка «Стабильный голос» (temp 0.75, top_p 0.85) |
+| Конструктор эмоций | `src/emotions.ts` (набор, словарь RU→EN по основам слов, `translateRu`), `src/emotionBuilder.ts` (окно) | «🎭 Эмоции» у панелей ремарок, 🎭 у полей «Манера»; незнакомые слова учатся (`dramaStudio.emotionWords`); вставить / в манеру / на панель ремарок |
 | Ремарки настраиваемые + «свой тег» | `DRAMA_REMARKS`, окно `#remarks-editor-modal` | панель `.drama-remarks[data-target]` над TTS, сценарием, главой |
 | Галерея голосов → голос Drama 3 | `makeDramaVoiceForPersona` | файл `drama3.voice.gguf` в папке голоса; «Ещё записи этого голоса» (`extraRefs`, `store_speaker_extra_asset`); пометка «пересоздайте» по `personaDramaSignature` |
 | Галерея: исправлен баг затирания | `applyGalleryReference` + `askChoice` | новая запись в заполненную карточку → вопрос «Новый голос / Заменить / Отмена» |

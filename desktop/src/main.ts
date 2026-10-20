@@ -59,6 +59,7 @@ import {
 import type { PauseTrimSettings } from "./audioEdit";
 import { initAudioEditor, openAudioEditor } from "./waveEditor";
 import { createWavePanel } from "./wavePanel";
+import { initEmotionBuilder, openEmotionBuilder } from "./emotionBuilder";
 import type { WavePanel } from "./wavePanel";
 import { decodeSubtitleBytes, formatTimestamp, parseSubtitles } from "./subtitles";
 import type { SubtitleCue } from "./subtitles";
@@ -5547,6 +5548,7 @@ function initRemarksPanel(container: HTMLElement): void {
       <input class="text-input custom-tag-input" type="text" spellcheck="false"
         placeholder="${escapeHtml(t("Your own direction in English, e.g. tired, hoarse voice"))}" />
       <button class="compact-button custom-tag-insert" type="button" title="${escapeHtml(t("Insert it in square brackets at the cursor"))}">${escapeHtml(t("Insert [ ]"))}</button>
+      <button class="compact-button emotions-open-btn" type="button" title="${escapeHtml(t("Build a direction from emotions in Russian"))}">${escapeHtml(t("🎭 Emotions"))}</button>
       <button class="compact-button remarks-edit-btn" type="button">${escapeHtml(t("✎ Edit buttons"))}</button>
     </div>
   `;
@@ -5561,6 +5563,9 @@ function initRemarksPanel(container: HTMLElement): void {
     }
   });
   container.querySelector(".remarks-edit-btn")!.addEventListener("click", openRemarksEditor);
+  const emotions = container.querySelector<HTMLButtonElement>(".emotions-open-btn")!;
+  emotions.addEventListener("mousedown", (event) => event.preventDefault());
+  emotions.addEventListener("click", () => openEmotionBuilder({ kind: "text", textarea: remarksTarget(container) }));
 }
 
 function renderRemarksEditor(): void {
@@ -5906,6 +5911,14 @@ function initDramaEngine(): void {
 
   renderDramaRemarks();
   initRemarksEditor();
+  initEmotionBuilder({
+    toast: showToast,
+    addRemark: (label, tag) => changeDramaRemarks([...dramaRemarks, { label, tag, kind: "remark" }]),
+  });
+  el("#chapter-narrator-emotions").addEventListener("click", (event) => {
+    event.preventDefault();
+    openEmotionBuilder({ kind: "manner", input: el<HTMLInputElement>("#chapter-narrator-style"), who: t("the narrator") });
+  });
   initDramaScene();
 
   applyDramaOptionsToUi(loadDramaOptions());
@@ -6180,9 +6193,12 @@ function renderSceneCharacters(): void {
       <select class="select-input" data-field="voice">${sceneVoiceOptionsHtml(character.voice)}</select>
       <input class="text-input" data-field="description" type="text" spellcheck="false"
         placeholder="${escapeHtml(t("Voice description in English, e.g. calm elderly man, low voice"))}" />
-      <input class="text-input" data-field="style" type="text" list="drama-style-presets" spellcheck="false"
-        title="${escapeHtml(t("How this character speaks in every reply: pick or type a direction in English"))}"
-        placeholder="${escapeHtml(t("Manner, e.g. calm narrator"))}" />
+      <span class="style-with-emotions">
+        <input class="text-input" data-field="style" type="text" list="drama-style-presets" spellcheck="false"
+          title="${escapeHtml(t("How this character speaks in every reply: pick or type a direction in English"))}"
+          placeholder="${escapeHtml(t("Manner, e.g. calm narrator"))}" />
+        <button class="icon-button" data-action="emotions" type="button" title="${escapeHtml(t("Emotion builder"))}">🎭</button>
+      </span>
       <button class="icon-button danger" data-action="remove" type="button" title="${escapeHtml(t("Delete"))}">✕</button>
     `;
     row.querySelector<HTMLInputElement>('[data-field="name"]')!.value = character.name;
@@ -6473,6 +6489,13 @@ function initDramaScene(): void {
     renderScenePreview();
   });
   list.addEventListener("click", (event) => {
+    const emotions = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action="emotions"]');
+    if (emotions) {
+      const row = emotions.closest<HTMLElement>(".scene-character-row")!;
+      const character = dramaScene.characters[Number(row.dataset.index)];
+      openEmotionBuilder({ kind: "manner", input: row.querySelector<HTMLInputElement>('[data-field="style"]')!, who: character?.name || t("this character") });
+      return;
+    }
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action="remove"]');
     if (!button) return;
     const index = Number(button.closest<HTMLElement>(".scene-character-row")?.dataset.index);
