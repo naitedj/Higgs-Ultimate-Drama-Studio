@@ -9824,7 +9824,9 @@ async function runVoicePrep(): Promise<void> {
     }
     setVoicePrepStatus(t("Cleaning up rumble and noise…"));
     await nextFrame();
-    let pcm = parseWavPcm(await invoke<string>("read_file_base64", { path: workPath }));
+    // Through the common decoder: the voice cleaner writes 32-bit float WAV.
+    const decoded = await invoke<GenerationResult>("read_audio_as_wav", { audioPath: workPath });
+    let pcm = parseWavPcm(decoded.wavBase64);
     if (pcm.channels > 1) pcm = convertChannels(pcm, 1);
     if (settings.filter) pcm = gateNoise(highPass(pcm, 75));
     const processed = pcmToResult(pcm);
