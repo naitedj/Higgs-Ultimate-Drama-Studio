@@ -674,6 +674,10 @@ export const RU: Record<string, string> = {
   "long pauses": "длинных пауз",
   "No pauses that long": "Таких длинных пауз нет",
   "Pauses shortened": "Паузы сокращены",
+  "Three takes with different seeds: listen and keep the best": "Три дубля с разными seed: послушайте и оставьте лучший",
+  "Listen to the takes and keep the best one.": "Послушайте дубли и оставьте лучший.",
+  "Keep the present take": "Оставить прежний дубль",
+  "Keep this one": "Оставить этот",
   "Look through the speakers folders for recordings that are not in the gallery list, listen to them and put them back":
     "Просмотреть папки голосов: найти записи, которых нет в списке галереи, прослушать и вернуть их",
   "🔎 Find voices in folders": "🔎 Найти голоса в папках",

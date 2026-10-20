@@ -8672,6 +8672,7 @@ function renderChapterPieces(): void {
         <span class="chapter-piece-actions">
           <button class="ref-play" data-action="play" type="button" ${piece.result ? "" : "disabled"} aria-label="${escapeHtml(t("Play"))}">${chapterPlayingId === piece.id ? "⏸" : "▶"}</button>
           <button class="compact-button" data-action="edit" type="button" ${piece.result ? "" : "disabled"} title="${escapeHtml(t("Cut pauses and pieces out of this line"))}">✂</button>
+          <button class="compact-button" data-action="variants" type="button" ${chapterRunning ? "disabled" : ""} title="${escapeHtml(t("Three takes with different seeds: listen and keep the best"))}">3×</button>
           <button class="compact-button" data-action="redo" type="button" ${chapterRunning ? "disabled" : ""}>${escapeHtml(t("↻ Redo"))}</button>
         </span>
       </div>
@@ -8894,6 +8895,115 @@ async function stopChapter(): Promise<void> {
   await invoke("drama_cancel").catch(() => {});
 }
 
+/** How many takes "3×" makes. */
+const VARIANT_COUNT = 3;
+
+type TakeVariant = { take: DramaGenerationResult; check: ChapterCheck };
+
+/** A window with the takes side by side; resolves with the chosen one, or -1. */
+function chooseTakeVariant(title: string, variants: TakeVariant[], current: DramaGenerationResult | null): Promise<number> {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop";
+    const urls: string[] = [];
+    modal.innerHTML = `
+      <section class="modal-panel variants-panel">
+        <div class="modal-head">
+          <div>
+            <h3></h3>
+            <span class="api-status-text">${escapeHtml(t("Listen to the takes and keep the best one."))}</span>
+          </div>
+          <button class="popover-close" data-choice="-1" type="button" aria-label="Close">✕</button>
+        </div>
+        <div class="variants-list"></div>
+        <div class="modal-actions">
+          <button class="compact-button" data-choice="-1" type="button">${escapeHtml(current ? t("Keep the present take") : t("Cancel"))}</button>
+        </div>
+      </section>
+    `;
+    modal.querySelector("h3")!.textContent = title;
+    const list = modal.querySelector<HTMLElement>(".variants-list")!;
+    variants.forEach((variant, index) => {
+      const row = document.createElement("div");
+      row.className = `variant-row ${variant.check.status}`;
+      const meta = [`${variant.take.seconds.toFixed(1)} ${t("s")}`, `seed ${variant.take.seed}`];
+      if (variant.check.coverage !== null) meta.push(`${t("words")} ${Math.round(variant.check.coverage * 100)}%`);
+      row.innerHTML = `
+        <strong>${index + 1}</strong>
+        <audio controls preload="auto"></audio>
+        <span class="variant-meta"></span>
+        <button class="compact-button primary" data-choice="${index}" type="button">${escapeHtml(t("Keep this one"))}</button>
+      `;
+      row.querySelector<HTMLElement>(".variant-meta")!.textContent = `${meta.join(" · ")}${variant.check.reason ? ` · ${variant.check.reason}` : ""}`;
+      void base64ToBlobAsync(variant.take.wavBase64, "audio/wav").then((blob) => {
+        const url = URL.createObjectURL(blob);
+        urls.push(url);
+        row.querySelector<HTMLAudioElement>("audio")!.src = url;
+      });
+      // One take plays at a time.
+      row.querySelector<HTMLAudioElement>("audio")!.addEventListener("play", (event) => {
+        for (const audio of list.querySelectorAll("audio")) if (audio !== event.target) audio.pause();
+      });
+      list.appendChild(row);
+    });
+    modal.addEventListener("click", (event) => {
+      const choice = (event.target as HTMLElement).closest<HTMLElement>("[data-choice]")?.dataset.choice;
+      if (choice === undefined && event.target !== modal) return;
+      for (const audio of modal.querySelectorAll("audio")) audio.pause();
+      for (const url of urls) URL.revokeObjectURL(url);
+      modal.remove();
+      resolve(choice === undefined ? -1 : Number(choice));
+    });
+    document.body.appendChild(modal);
+  });
+}
+
+/** "3×": the piece voiced with three new seeds; the chosen take replaces the present one. */
+async function chapterPieceVariants(piece: ChapterPieceState): Promise<void> {
+  if (chapterRunning) return;
+  if (!(await ensureDramaLoaded())) return;
+  const settings = readChapterSettings();
+  const recognise = settings.check && Boolean(localStorage.getItem("higgsAudio.whisperModel"));
+  chapterRunning = true;
+  chapterStopRequested = false;
+  const before = piece.status;
+  piece.status = "generating";
+  renderChapterPieces();
+  const variants: TakeVariant[] = [];
+  try {
+    const { text, voice } = chapterPieceRequest(piece);
+    for (let i = 0; i < VARIANT_COUNT; i++) {
+      if (chapterStopRequested) break;
+      el("#chapter-status").textContent = `${t("Piece")} ${chapterPieces.indexOf(piece) + 1}: ${t("take")} ${i + 1}/${VARIANT_COUNT}`;
+      const options = dramaRequestOptions({ ...readDramaOptionsFromUi(), seed: "" });
+      const raw = await dramaGenerate({ request: { text, voice, options, streamPlayback: false } });
+      const take = autoShortenPauses(raw);
+      variants.push({ take, check: await checkChapterTake(piece, take, recognise) });
+    }
+  } catch (e) {
+    showToast(`${t("Generation failed")}: ${e}`, "error");
+  } finally {
+    chapterRunning = false;
+    piece.status = before;
+    renderChapterPieces();
+  }
+  if (variants.length === 0) return;
+  const chosen = await chooseTakeVariant(`${t("Piece")} ${chapterPieces.indexOf(piece) + 1}`, variants, piece.result);
+  if (chosen < 0) return;
+  const { take, check } = variants[chosen];
+  const request = chapterPieceRequest(piece);
+  piece.result = take;
+  piece.status = check.status;
+  piece.reason = check.reason;
+  piece.coverage = check.coverage;
+  piece.attempts = (piece.attempts || 0) + variants.length;
+  piece.stale = false;
+  piece.staleWhy = undefined;
+  piece.voicedWith = `${request.voice}\n${request.text}`;
+  chapterResult = null;
+  renderChapterPieces();
+}
+
 async function redoChapterPiece(piece: ChapterPieceState): Promise<void> {
   if (chapterRunning) return;
   if (!(await ensureDramaLoaded())) return;
@@ -9044,7 +9154,9 @@ function initChapter(): void {
     if (!button) return;
     const piece = chapterPieces.find((p) => p.id === button.closest<HTMLElement>(".chapter-piece")?.dataset.id);
     if (!piece) return;
-    if (button.dataset.action === "redo") {
+    if (button.dataset.action === "variants") {
+      void chapterPieceVariants(piece);
+    } else if (button.dataset.action === "redo") {
       void redoChapterPiece(piece);
     } else if (button.dataset.action === "edit" && piece.result) {
       editAudio(`${t("Piece")} ${chapterPieces.indexOf(piece) + 1}`, piece.result.wavBase64, (edited) => {
